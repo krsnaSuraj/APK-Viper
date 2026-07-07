@@ -1,0 +1,47 @@
+# Gradle
+.gradle/
+build/
+*/build/
+local.properties
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.settings/
+.project
+.classpath
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Android
+app/build/
+*.apk
+*.aab
+*.xapk
+*.apks
+*.dex
+*.class
+
+# Test artifacts
+test_*.apk
+test_*.xapk
+
+# Environment
+.env
+.env.local
+
+# Command Code
+.commandcode/
+
+# Keystore
+*.jks
+keystore.properties

@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Head base (dark green) -->
+    <path
+        android:fillColor="#1A472A"
+        android:pathData="M54,22 L76,40 L84,58 L72,72 L60,80 L54,76 L48,80 L36,72 L24,58 L32,40 Z" />
+
+    <!-- Crown plate (medium green) -->
+    <path
+        android:fillColor="#2D6A3F"
+        android:pathData="M54,22 L70,36 L76,48 L54,52 L32,48 L38,36 Z" />
+
+    <!-- Left cheek -->
+    <path
+        android:fillColor="#245D34"
+        android:pathData="M32,40 L24,58 L36,66 L48,56 L40,46 Z" />
+
+    <!-- Right cheek -->
+    <path
+        android:fillColor="#245D34"
+        android:pathData="M76,40 L84,58 L72,66 L60,56 L68,46 Z" />
+
+    <!-- Lower jaw left -->
+    <path
+        android:fillColor="#1E5229"
+        android:pathData="M36,66 L48,72 L48,56 Z" />
+
+    <!-- Lower jaw right -->
+    <path
+        android:fillColor="#1E5229"
+        android:pathData="M72,66 L60,72 L60,56 Z" />
+
+    <!-- Left eye socket -->
+    <path
+        android:fillColor="#0A1F12"
+        android:pathData="M40,40 L50,36 L56,40 L56,48 L50,52 L40,48 Z" />
+
+    <!-- Right eye socket -->
+    <path
+        android:fillColor="#0A1F12"
+        android:pathData="M52,40 L58,36 L68,40 L68,48 L58,52 L52,48 Z" />
+
+    <!-- Left eye glow -->
+    <path
+        android:fillColor="#00FF41"
+        android:pathData="M44,42 L50,38 L54,42 L50,46 Z" />
+
+    <!-- Right eye glow -->
+    <path
+        android:fillColor="#00FF41"
+        android:pathData="M54,42 L58,38 L64,42 L58,46 Z" />
+
+    <!-- Left pupil (red slit) -->
+    <path
+        android:fillColor="#FF1744"
+        android:pathData="M48,40 L50,38 L50,44 L48,42 Z" />
+
+    <!-- Right pupil (red slit) -->
+    <path
+        android:fillColor="#FF1744"
+        android:pathData="M58,40 L60,38 L60,44 L58,42 Z" />
+
+    <!-- Nose ridge -->
+    <path
+        android:fillColor="#0A1F12"
+        android:pathData="M52,52 L54,56 L56,52 Z" />
+
+    <!-- Left fang -->
+    <path
+        android:fillColor="#F5F5F5"
+        android:pathData="M48,72 L46,84 L50,72 Z" />
+
+    <!-- Right fang -->
+    <path
+        android:fillColor="#F5F5F5"
+        android:pathData="M58,72 L62,84 L56,72 Z" />
+
+    <!-- Geometric accent left -->
+    <path
+        android:fillColor="#00E676"
+        android:pathData="M34,54 L44,58 L40,62 Z" />
+
+    <!-- Geometric accent right -->
+    <path
+        android:fillColor="#00E676"
+        android:pathData="M74,54 L64,58 L68,62 Z" />
+
+    <!-- V chin detail -->
+    <path
+        android:fillColor="#00E676"
+        android:pathData="M46,66 L54,72 L62,66 L58,66 L54,69 L50,66 Z" />
+
+</vector>
