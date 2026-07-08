@@ -2,6 +2,7 @@ package com.apkviper.engine.dex
 
 import com.apkviper.model.DecompileResult
 import com.apkviper.model.FindingCategory
+import com.apkviper.model.FindingConfidence
 import com.apkviper.model.Severity
 import org.junit.Assert.*
 import org.junit.Test
@@ -58,6 +59,35 @@ class DexOpcodeAnalyzerTest {
         )
         val findings = analyzer.analyze(result)
         assertTrue(findings.isEmpty())
+    }
+
+    @Test
+    fun facebookRedexgenObfuscation_isSkipped_notFlaggedAsSuspicious() {
+        // Facebook Audience Network's "redex" tool emits classes named
+        // Lcom_facebook_ads_redexgen_X_* whose new-array/fill-array-data and dead-code patterns
+        // are benign SDK artifacts. They must NOT be scored as suspicious (prevents false
+        // RAT/MALICIOUS verdicts on any app bundling the Facebook ads SDK).
+        val smali = """
+            .method public foo()V
+                .registers 3
+                new-array v0, v1, [B
+                fill-array-data v0, :payload
+                const-string v2, "x"
+                invoke-static {v2}, Lcom/test/Decrypt;->decrypt(Ljava/lang/String;)Ljava/lang/String;
+                throw v0
+            .end method
+        """.trimIndent()
+        val result = DecompileResult(
+            javaSource = emptyMap(),
+            smaliSource = mapOf("Lcom_facebook_ads_redexgen_X_0E_.smali" to smali),
+            manifest = "", resources = emptyMap(),
+            dexFiles = emptyList(), nativeLibs = emptyList(), decompileTimeMs = 0
+        )
+        val findings = analyzer.analyze(result)
+        assertTrue(
+            "Facebook redex obfuscation must be skipped, got: ${findings.map { it.title }}",
+            findings.none { it.title == "Suspicious Opcode Sequence" }
+        )
     }
 
     @Test
@@ -269,6 +299,9 @@ class DexOpcodeAnalyzerTest {
         assertTrue(findings.any { it.title == "Anti-Analysis Detection" })
         assertEquals(FindingCategory.MALWARE, findings.first { it.title == "Anti-Analysis Detection" }.category)
         assertEquals(Severity.HIGH, findings.first { it.title == "Anti-Analysis Detection" }.severity)
+        // Verdict-gate: noisy anti-analysis heuristic must NOT be strong evidence,
+        // otherwise a single modded-game match could be flipped to MALICIOUS.
+        assertEquals(FindingConfidence.LOW, findings.first { it.title == "Anti-Analysis Detection" }.confidence)
     }
 
     @Test

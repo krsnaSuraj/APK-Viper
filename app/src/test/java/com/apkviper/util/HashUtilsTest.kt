@@ -112,4 +112,29 @@ class HashUtilsTest {
             assertTrue(e.message!!.contains("Cannot read file"))
         }
     }
+
+    @Test
+    fun sha256_largeFile_streamingConsistent() {
+        // Exercises the chunked (BUFFER_SIZE) read path with content spanning many buffers
+        // and a size that is NOT a multiple of the buffer size.
+        val data = ByteArray(1_234_567) { (it * 31).toByte() }
+        val f1 = File.createTempFile("hash_large_a", ".tmp").apply { writeBytes(data) }
+        val f2 = File.createTempFile("hash_large_b", ".tmp").apply { writeBytes(data) }
+        assertEquals("Large-file hashing must be stable across runs/buffers", HashUtils.sha256(f1), HashUtils.sha256(f2))
+        assertEquals(64, HashUtils.sha256(f1).length)
+        f1.delete(); f2.delete()
+    }
+
+    @Test
+    fun sha256_directory_throws() {
+        val dir = File.createTempFile("hash_dir", ".tmp").apply { delete(); mkdirs() }
+        try {
+            HashUtils.sha256(dir)
+            fail("Expected exception for a directory")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message!!.contains("Cannot read file"))
+        } finally {
+            dir.delete()
+        }
+    }
 }

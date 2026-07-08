@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.apkviper.model.Finding
 import com.apkviper.model.FindingCategory
+import com.apkviper.model.FindingConfidence
 import com.apkviper.model.Severity
 import org.junit.Assert.*
 import org.junit.Test
@@ -81,6 +82,65 @@ class AppDatabaseTest {
         assertEquals("Matches Trojan.Dropper.ABC123", result[0].details)
         assertEquals("/path/to/classes.dex", result[0].file)
         assertEquals(42, result[0].line)
+    }
+
+    // ── Confidence / ruleSource (verdict-gate persistence) ──────────
+    //
+    // The verdict-gate fix relies on per-finding `confidence` + `ruleSource`.
+    // If the converter dropped them (the previous Gson-based bug, and an early
+    // version of this org.json converter), every finding would reload as
+    // confidence=HIGH and re-trigger false MALICIOUS verdicts from history.
+    // These tests lock the round-trip behavior.
+
+    @Test
+    fun findingConverter_lowConfidence_heuristic_roundTrips() {
+        val original = listOf(
+            Finding(
+                category = FindingCategory.BEHAVIORAL,
+                severity = Severity.HIGH,
+                title = "Possible data exfiltration",
+                description = "Heuristic chain",
+                confidence = FindingConfidence.LOW,
+                ruleSource = "heuristic_behavioral"
+            )
+        )
+        val result = findingConverter.fromString(findingConverter.fromList(original))
+        assertEquals(1, result.size)
+        assertEquals(FindingConfidence.LOW, result[0].confidence)
+        assertEquals("heuristic_behavioral", result[0].ruleSource)
+    }
+
+    @Test
+    fun findingConverter_allConfidenceLevels_roundTrip() {
+        val original = FindingConfidence.values().mapIndexed { i, c ->
+            Finding(FindingCategory.CODE, Severity.INFO, "c$i", "d", confidence = c, ruleSource = "src_$c")
+        }
+        val result = findingConverter.fromString(findingConverter.fromList(original))
+        assertEquals(original.size, result.size)
+        FindingConfidence.values().forEachIndexed { i, c ->
+            assertEquals(c, result[i].confidence)
+            assertEquals("src_$c", result[i].ruleSource)
+        }
+    }
+
+    @Test
+    fun findingConverter_missingConfidenceKey_defaultsToHigh_backwardCompatible() {
+        // Old rows serialized before confidence was persisted have no "confidence" key.
+        val json = """[{"category":"CODE","severity":"INFO","title":"t","description":"d"}]"""
+        val result = findingConverter.fromString(json)
+        assertEquals(1, result.size)
+        assertEquals(FindingConfidence.HIGH, result[0].confidence)
+        assertNull(result[0].ruleSource)
+    }
+
+    @Test
+    fun findingConverter_nullRuleSource_roundTripsToNull() {
+        val original = listOf(
+            Finding(FindingCategory.CODE, Severity.MEDIUM, "t", "d", confidence = FindingConfidence.MEDIUM, ruleSource = null)
+        )
+        val result = findingConverter.fromString(findingConverter.fromList(original))
+        assertEquals(FindingConfidence.MEDIUM, result[0].confidence)
+        assertNull(result[0].ruleSource)
     }
 
     @Test

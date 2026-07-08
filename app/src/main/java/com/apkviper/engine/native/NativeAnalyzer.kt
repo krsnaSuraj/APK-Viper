@@ -48,6 +48,20 @@ class NativeAnalyzer {
         Regex(".*android\\.googlesource\\.com.*"),
         Regex(".*android\\.com.*"),
         Regex(".*freedesktop\\.org.*"),
+        Regex(".*github\\.com.*"),
+        Regex(".*gitlab\\.com.*"),
+        Regex(".*bitbucket\\.org.*"),
+        Regex(".*kotlinlang\\.org.*"),
+        Regex(".*developer\\.android\\.com.*"),
+    )
+
+    // Symbols that are NORMAL in essentially every native library (C runtime, networking,
+    // string handling). Emitting these as findings is the #1 cause of false positives on
+    // genuine apps (Unity, Firebase, gstreamer, etc.). They are only meaningful as part of
+    // a corroborated malicious combination (see correlation engine below).
+    private val benignNativeSymbols = setOf(
+        "socket", "connect", "sendto", "recvfrom", "mmap", "memcpy", "strcpy",
+        "sprintf", "getenv", "setenv", "unlink", "readdir", "access", "dlopen", "dlsym"
     )
 
     // Noise IP filter — internal/loopback, not web endpoints
@@ -63,8 +77,6 @@ class NativeAnalyzer {
     )
 
     private data class SymbolInfo(val description: String, val severity: Severity)
-
-    private val elMagic = byteArrayOf(0x7F, 'E'.code.toByte(), 'L'.code.toByte(), 'F'.code.toByte())
 
     fun analyze(decompiled: DecompileResult): List<Finding> {
         val findings = mutableListOf<Finding>()
@@ -89,7 +101,7 @@ class NativeAnalyzer {
             val libName = libPath.substringAfterLast('/').removeSuffix(".so")
             if (libName.length < 2 || libName.matches(Regex("^[a-z0-9]{20,}$"))) {
                 findings.add(Finding(
-                    category = FindingCategory.NATIVE, severity = Severity.HIGH,
+                    category = FindingCategory.NATIVE, severity = Severity.MEDIUM,
                     title = "Unknown Obfuscated Native Library",
                     description = "Unidentified library with obfuscated name: ${libPath.substringAfterLast('/')}",
                     file = libPath
@@ -187,24 +199,31 @@ class NativeAnalyzer {
                     ))
                 }
 
-                // Only emit symbol findings for non-framework or if elevated
+                // Only emit symbol findings that are genuinely meaningful. Common C-runtime /
+                // networking symbols (socket, connect, memcpy, strcpy, dlopen, ...) are skipped
+                // for non-framework libs — they appear in virtually every native library and
+                // were the main source of false "Command & Control / Buffer Overflow" findings.
                 analysis.foundSymbols.entries
                     .filter { !analysis.isFramework || it.value.ordinal >= Severity.HIGH.ordinal }
+                    .filter { !(analysis.isFramework && it.value.ordinal < Severity.HIGH.ordinal) }
+                    .filter { !(symbolIsBenign(it.key) && !analysis.isFramework) }
                     .forEach { (symbol, severity) ->
+                        val effectiveSeverity = if (!analysis.isFramework) severity.coerceAtMost(Severity.MEDIUM) else severity
                         val desc = suspiciousSymbols.find { it.first == symbol }?.second?.description ?: symbol
                         findings.add(Finding(
-                            category = FindingCategory.NATIVE, severity = severity,
+                            category = FindingCategory.NATIVE, severity = effectiveSeverity,
                             title = "Native Symbol: $desc",
                             description = "$symbol in $libName${if (analysis.isFramework) " [Framework: ${analysis.frameworkName}]" else ""}",
                             file = analysis.path
                         ))
                     }
 
-                // URL findings for non-framework libs only
+                // URL findings for non-framework libs only — informational, NOT malware evidence
+                // on its own (many genuine apps hardcode CDN/API endpoints in native strings).
                 if (!analysis.isFramework) {
                     analysis.foundUrls.take(3).forEach { url ->
                         findings.add(Finding(
-                            category = FindingCategory.NATIVE, severity = Severity.HIGH,
+                            category = FindingCategory.NATIVE, severity = Severity.MEDIUM,
                             title = "Hardcoded URL in Native Code",
                             description = url,
                             file = analysis.path
@@ -212,7 +231,7 @@ class NativeAnalyzer {
                     }
                     analysis.foundIps.take(3).forEach { ip ->
                         findings.add(Finding(
-                            category = FindingCategory.NATIVE, severity = Severity.HIGH,
+                            category = FindingCategory.NATIVE, severity = Severity.MEDIUM,
                             title = "Hardcoded IP in Native Code",
                             description = ip,
                             file = analysis.path
@@ -220,12 +239,14 @@ class NativeAnalyzer {
                     }
                 }
 
-                // High entropy for unknown libs
+                // High entropy for unknown libs — informational. Real packing needs unpacking
+                // stubs AND corroboration (see EntropyPackerDetector); a high-entropy .so alone is
+                // common for legit native libraries (game engines, media frameworks).
                 if (!analysis.isFramework && analysis.entropy > 7.5) {
                     findings.add(Finding(
-                        category = FindingCategory.NATIVE, severity = Severity.HIGH,
-                        title = "Highly Encrypted Native Payload",
-                        description = "$libName entropy: ${"%.2f".format(analysis.entropy)} — unknown library with encrypted content",
+                        category = FindingCategory.NATIVE, severity = Severity.LOW,
+                        title = "High Entropy Native Payload",
+                        description = "$libName entropy: ${"%.2f".format(analysis.entropy)} — unknown library with high entropy (investigate if combined with packer stubs)",
                         file = analysis.path
                     ))
                 }
@@ -248,10 +269,10 @@ class NativeAnalyzer {
                     val execSymbols = symbols.filter { it in setOf("system", "execve", "execvp", "execl", "popen") }.joinToString(", ")
                     val netSymbols = symbols.filter { it in setOf("socket", "connect", "sendto", "recvfrom") }.joinToString(", ")
                     findings.add(Finding(
-                        category = FindingCategory.NATIVE, severity = Severity.CRITICAL,
-                        title = "CRITICAL: Reverse Shell Capability",
+                        category = FindingCategory.NATIVE, severity = Severity.MEDIUM,
+                        title = "Reverse Shell Capability (Native)",
                         description = "Unknown lib $libName has execution ($execSymbols) AND network ($netSymbols) — potential reverse shell or payload dropper",
-                        details = "This combination in an unidentified binary is the strongest indicator of C2 malware",
+                        details = "This combination in an unidentified binary is suspicious; correlate with other engines (YARA / hash / C2 IOC) before concluding malware",
                         file = analysis.path
                     ))
                 }
@@ -259,18 +280,19 @@ class NativeAnalyzer {
                 // Rule: execution + process injection in single unknown lib
                 if (hasExec && hasInject) {
                     findings.add(Finding(
-                        category = FindingCategory.NATIVE, severity = Severity.CRITICAL,
-                        title = "CRITICAL: Code Injection + Execution",
+                        category = FindingCategory.NATIVE, severity = Severity.MEDIUM,
+                        title = "Code Injection + Execution (Native)",
                         description = "Unknown lib $libName combines process injection with command execution — advanced malware pattern",
                         file = analysis.path
                     ))
                 }
 
-                // Rule: network + high entropy + unknown = encrypted C2 payload
+                // Rule: network + high entropy + unknown = encrypted C2 payload (informational
+                // unless corroborated by another engine — never alone a verdict driver)
                 if (hasNet && analysis.entropy > 7.0) {
                     findings.add(Finding(
-                        category = FindingCategory.NATIVE, severity = Severity.CRITICAL,
-                        title = "Encrypted C2 Payload",
+                        category = FindingCategory.NATIVE, severity = Severity.MEDIUM,
+                        title = "Encrypted C2 Payload (Native)",
                         description = "Unknown lib $libName has networking AND high entropy (${"%.1f".format(analysis.entropy)}) — likely encrypted C2 logic",
                         file = analysis.path
                     ))
@@ -280,6 +302,8 @@ class NativeAnalyzer {
 
         return findings
     }
+
+    private fun symbolIsBenign(symbol: String): Boolean = symbol.lowercase() in benignNativeSymbols
 
     private fun extractStrings(data: ByteArray, minLen: Int = 4): String {
         val sb = StringBuilder()

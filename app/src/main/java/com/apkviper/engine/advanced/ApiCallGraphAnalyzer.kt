@@ -3,6 +3,7 @@ package com.apkviper.engine.advanced
 import com.apkviper.model.DecompileResult
 import com.apkviper.model.Finding
 import com.apkviper.model.FindingCategory
+import com.apkviper.model.FindingConfidence
 import com.apkviper.model.Severity
 
 /**
@@ -120,11 +121,14 @@ class ApiCallGraphAnalyzer {
                 findings.add(Finding(
                     category = FindingCategory.MALWARE,
                     severity = effectiveSeverity,
+                    confidence = FindingConfidence.LOW,
                     title = chain.name + if (sequenceConfirmed) " [SEQUENCE CONFIRMED]" else "",
                     description = chain.description,
-                    details = "$matches of ${chain.apis.size} API calls matched (${effectiveConfidence}% confidence)" +
-                        if (sequenceConfirmed) " — APIs appear in exact order, high-confidence attack chain" else "" +
-                        "$crossClass"
+                    details = buildString {
+                        append("$matches of ${chain.apis.size} API calls matched (${effectiveConfidence}% confidence)")
+                        if (sequenceConfirmed) append(" — APIs appear in exact order, high-confidence attack chain")
+                        if (crossClass.isNotEmpty()) append(crossClass)
+                    }
                 ))
             }
         }

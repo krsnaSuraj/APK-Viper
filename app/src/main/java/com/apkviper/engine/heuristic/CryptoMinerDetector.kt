@@ -42,28 +42,6 @@ class CryptoMinerDetector {
         return analyzeText(allCode)
     }
 
-    fun analyzeIndexed(keywordMatches: Set<String>): List<Finding> {
-        val findings = mutableListOf<Finding>()
-        miningSignatures.forEach { (sig, desc) ->
-            if (sig.lowercase() in keywordMatches) findings.add(Finding(
-                FindingCategory.CRYPTO_MINER, Severity.CRITICAL, "Crypto Miner Detected", desc))
-        }
-        miningPoolDomains.forEach { domain ->
-            if (domain.lowercase() in keywordMatches) findings.add(Finding(
-                FindingCategory.CRYPTO_MINER, Severity.CRITICAL, "Mining Pool Connection", "Connection to mining pool: $domain"))
-        }
-        if ("worker" in keywordMatches && ("coin-hive" in keywordMatches || "cryptonight" in keywordMatches ||
-            "webassembly" in keywordMatches || "wasm" in keywordMatches))
-            findings.add(Finding(FindingCategory.CRYPTO_MINER, Severity.HIGH,
-                "Crypto Mining Worker Detected", "Web Worker with cryptomining indicators"))
-        val wm = listOf("webassembly.module","webassembly.instance","instantiatestreaming","compilestreaming","webassembly.memory").count{it in keywordMatches}
-        val mc = "crypto" in keywordMatches || "hash" in keywordMatches || "mine" in keywordMatches
-        if (wm >= 2 && mc) findings.add(Finding(FindingCategory.CRYPTO_MINER, Severity.HIGH, "WASM Crypto Module Detected", "WebAssembly with crypto/hash context"))
-        val cp = listOf("availableprocessors","cpucount","cpu_count","getcpucount").count{it in keywordMatches}
-        if (cp >= 2 && mc) findings.add(Finding(FindingCategory.CRYPTO_MINER, Severity.MEDIUM, "CPU Probing with Crypto Context", "CPU enumeration with crypto references"))
-        return findings
-    }
-
     private fun analyzeText(allCode: String): List<Finding> {
         val findings = mutableListOf<Finding>()
         miningSignatures.forEach { (sig, desc) ->

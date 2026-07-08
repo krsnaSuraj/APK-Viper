@@ -3,6 +3,7 @@ package com.apkviper.engine.advanced
 import com.apkviper.model.DecompileResult
 import com.apkviper.model.Finding
 import com.apkviper.model.FindingCategory
+import com.apkviper.model.FindingConfidence
 import com.apkviper.model.Severity
 import java.security.MessageDigest
 
@@ -78,6 +79,7 @@ class CfgStructuralAnalyzer {
                         findings.add(Finding(
                             category = FindingCategory.MALWARE,
                             severity = pattern.severity,
+                            confidence = FindingConfidence.LOW,
                             title = pattern.description,
                             description = "Method: ${method.name} in $className",
                             details = "CFG: ${cfg.blockCount} blocks, ${cfg.branchCount} branches, ${cfg.loopCount} loops, ${cfg.callCount} calls\nStructural hash: $structuralHash",

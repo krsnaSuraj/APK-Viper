@@ -1,6 +1,5 @@
 package com.apkviper.engine.static
 
-import com.apkviper.model.DecompileResult
 import com.apkviper.model.FindingCategory
 import com.apkviper.model.Severity
 import org.junit.Assert.*
@@ -43,12 +42,6 @@ class CertificateAnalyzerTest {
                 zos.closeEntry()
             }
         }
-    }
-
-    @Test
-    fun analyzeReturnsEmpty() {
-        val result = DecompileResult(mapOf(), mapOf(), "", mapOf(), emptyList(), emptyList(), 0)
-        assertTrue(analyzer.analyze(result).isEmpty())
     }
 
     @Test
@@ -113,7 +106,7 @@ class CertificateAnalyzerTest {
         val findings = analyzer.analyzeCertificate(tmp)
         val debugFinding = findings.find { it.title.contains("Debug Certificate") }
         assertNotNull("Debug cert subject should trigger debug finding", debugFinding)
-        assertEquals(Severity.MEDIUM, debugFinding!!.severity)
+        assertEquals(Severity.INFO, debugFinding!!.severity)
     }
 
     @Test

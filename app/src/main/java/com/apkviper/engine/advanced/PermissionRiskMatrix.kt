@@ -88,16 +88,6 @@ class PermissionRiskMatrix {
             "Media Exfiltration Suite", "Storage + location + camera. Full media theft capability.", 88, Severity.HIGH),
     )
 
-    private fun inferAppPurpose(permissions: Set<String>): String {
-        val normalized = permissions.map { it.removePrefix("android.permission.") }.toSet()
-        if ("MANAGE_EXTERNAL_STORAGE" in normalized) return "FILE_MANAGER"
-        if ("CAMERA" in normalized && "RECORD_AUDIO" !in normalized) return "CAMERA_APP"
-        if ("INTERNET" in normalized &&
-            setOf("READ_SMS", "SEND_SMS", "RECEIVE_SMS", "READ_CONTACTS", "READ_CALL_LOG").none { it in normalized }
-        ) return "BROWSER"
-        return "GENERAL"
-    }
-
     fun analyze(requestedPermissions: List<String>, exportedServiceCount: Int, appPurpose: String = "GENERAL"): List<Finding> {
         val findings = mutableListOf<Finding>()
         val permSet = requestedPermissions.map { it.trim() }.toSet()

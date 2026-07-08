@@ -33,6 +33,17 @@ class SDKAnalyzerTest {
     }
 
     @Test
+    fun vulnerableSdk_usesCodeCategory_notMalware() {
+        // Gate contract: a vulnerable SDK (CVE) is a CODE finding, never MALWARE — a CVE is not
+        // malware and must not feed the strong-evidence set that drives a MALICIOUS verdict.
+        val result = decompileResult("import okhttp3.OkHttpClient;")
+        val findings = analyzer.analyze(result)
+        val cve = findings.firstOrNull { it.description.contains("CVE-") }
+        assertNotNull("Should detect CVE", cve)
+        assertEquals("Vulnerable SDK finding must be CODE, not MALWARE", FindingCategory.CODE, cve!!.category)
+    }
+
+    @Test
     fun okhttp_withCve_detected() {
         val result = decompileResult("import okhttp3.OkHttpClient;")
         val findings = analyzer.analyze(result)

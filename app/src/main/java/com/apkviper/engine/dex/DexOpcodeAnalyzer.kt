@@ -4,6 +4,7 @@ import com.apkviper.dex.DexParser
 import com.apkviper.model.DecompileResult
 import com.apkviper.model.Finding
 import com.apkviper.model.FindingCategory
+import com.apkviper.model.FindingConfidence
 import com.apkviper.model.Severity
 import java.io.File
 
@@ -36,6 +37,13 @@ class DexOpcodeAnalyzer {
         var antiAnalysisBlocks = 0
 
         decompiled.smaliSource.entries.forEach { (fileName, smali) ->
+            // Skip known benign obfuscation frameworks (e.g. Facebook Audience Network's
+            // "redex" tooling produces classes like Lcom_facebook_ads_redexgen_X_*) whose
+            // new-array/fill-array-data and dead-code patterns are SDK artifacts, not malware.
+            // Treating them as suspicious would massively inflate scores for any app that
+            // simply bundles the Facebook ads SDK (a false RAT/MALICIOUS verdict).
+            if (isBenignObfuscation(fileName)) return@forEach
+
             val lines = smali.lines()
             val opcodeSequence = mutableListOf<Int>()
             lines.forEach { line ->
@@ -157,6 +165,7 @@ class DexOpcodeAnalyzer {
             findings.add(Finding(
                 category = FindingCategory.MALWARE,
                 severity = Severity.HIGH,
+                confidence = FindingConfidence.LOW,
                 title = "Anti-Analysis Detection",
                 description = "$antiAnalysisBlocks anti-analysis checks detected — app evades debugging/emulation"
             ))
@@ -212,6 +221,25 @@ class DexOpcodeAnalyzer {
     }
 
     companion object {
+        /**
+         * Known benign obfuscation packages. These are NOT malware — they are third-party SDK
+         * obfuscators (notably Facebook Audience Network's `redex` tool which emits classes named
+         * `Lcom_facebook_ads_redexgen_X_*`). Their code patterns (encrypted-array payloads,
+         * always-throws dead code, string decryption) are SDK artifacts and must never be scored
+         * as malicious. This mirrors the native-framework downgrade list in [FrameworkWhitelist].
+         */
+        private val benignObfuscationPackages = listOf(
+            "redexgen",
+            "com_facebook_ads_redexgen",
+            "com_facebook_ads_redex",
+            "Lcom/facebook/ads/",
+            "Lcom/facebook/"
+        )
+
+        private fun isBenignObfuscation(fileName: String): Boolean {
+            return benignObfuscationPackages.any { fileName.contains(it, ignoreCase = true) }
+        }
+
         private val invokeVirtual = Regex("invoke-virtual\\s")
         private val invokeStatic = Regex("invoke-static\\s")
         private val invokeDirect = Regex("invoke-direct\\s")

@@ -41,7 +41,7 @@ class AutoUpdateEngineTest {
     fun getDynamicRules_containsStringPatterns() {
         val engine = AutoUpdateEngine(context)
         val rules = engine.getDynamicRules()
-        assertTrue("Rules should contain string identifiers", rules.contains("\$thread"))
+        assertTrue("Rules should contain miner pool strings", rules.contains("stratum+tcp"))
         assertTrue("Rules should contain conditions", rules.contains("condition:"))
     }
 

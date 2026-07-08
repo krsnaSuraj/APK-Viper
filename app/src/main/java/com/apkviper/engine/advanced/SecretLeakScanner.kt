@@ -7,10 +7,6 @@ import kotlin.math.ln
 
 class SecretLeakScanner {
 
-    companion object {
-        private const val MAX_SOURCE_SIZE = 50 * 1024 * 1024
-    }
-
     data class SecretMatch(
         val type: String,
         val value: String,

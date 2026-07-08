@@ -1,6 +1,8 @@
 package com.apkviper.engine.advanced
 
 import com.apkviper.model.DecompileResult
+import com.apkviper.model.FindingCategory
+import com.apkviper.model.FindingConfidence
 import com.apkviper.model.Severity
 import org.junit.Assert.*
 import org.junit.Test
@@ -163,5 +165,31 @@ class CfgStructuralAnalyzerTest {
             }
         """.trimIndent()
         assertTrue(analyzer.analyze(decompile(mapOf("A.java" to code))).isEmpty())
+    }
+
+    @Test
+    fun malwareCfgFinding_usesLowConfidence_verdictGateSafe() {
+        // Structural MALWARE matches must be LOW confidence so they cannot, alone,
+        // flip a benign/modded app to MALICIOUS (verdict gate requires >=2 STRONG findings).
+        val code = """
+            class A {
+                void run() {
+                    if (x > 0) { doSomething(); }
+                    if (y > 0) { doElse(); }
+                    for (int i = 0; i < 10; i++) { loop(); }
+                    for (int j = 0; j < 5; j++) { another(); }
+                    call1();
+                    call2();
+                    call3();
+                }
+            }
+        """.trimIndent()
+        val findings = analyzer.analyze(decompile(mapOf("A.java" to code)))
+        val malware = findings.filter { it.category == FindingCategory.MALWARE }
+        assertFalse("Expected at least one MALWARE finding", malware.isEmpty())
+        assertTrue(
+            "All MALWARE findings must be LOW confidence",
+            malware.all { it.confidence == FindingConfidence.LOW }
+        )
     }
 }

@@ -32,7 +32,7 @@ data class ScanUiState(
     val isScanning: Boolean = false,
     val isPreparing: Boolean = false,
     val scanComplete: Boolean = false,
-    val     currentPhase: Int = 0,
+    val currentPhase: Int = 0,
     val totalPhases: Int = ScanPipeline.TOTAL_PHASE_COUNT,
     val progress: Float = 0f,
     val currentActivity: String = "Preparing...",
@@ -282,7 +282,11 @@ class ScanViewModel(private val application: Application) : ViewModel() {
                     )
                     application.stopService(Intent(application, ScanForegroundService::class.java))
                     return@coroutineScope
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
+                    // NOTE: must catch Throwable (not just Exception) — R8/ART can throw
+                    // Errors such as VerifyError/StackOverflowError from the scan pipeline.
+                    // Letting those escape kills the process and triggers a redelivered
+                    // foreground-service intent, which would otherwise crash the app again.
                     pipelineError = e
                 }
 

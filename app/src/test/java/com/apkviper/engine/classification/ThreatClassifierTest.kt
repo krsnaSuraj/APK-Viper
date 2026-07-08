@@ -2,6 +2,7 @@ package com.apkviper.engine.classification
 
 import com.apkviper.model.Finding
 import com.apkviper.model.FindingCategory
+import com.apkviper.model.FindingConfidence
 import com.apkviper.model.Severity
 import org.junit.Assert.*
 import org.junit.Test
@@ -10,19 +11,20 @@ class ThreatClassifierTest {
     private val classifier = ThreatClassifier()
 
     @Test
-    fun noFindings_returnsNull() {
+    fun emptyFindings_cleanClassification() {
         val result = classifier.classify(emptyList())
-        assertNull(result.classification)
-        assertEquals(1, result.remediations.size)
+        assertEquals("Clean Application", result.classification)
+        assertTrue(result.remediations.isEmpty())
     }
 
     @Test
-    fun lowScoreFindings_returnsNull() {
+    fun benignFindings_noMalwareLabel() {
         val findings = listOf(
             Finding(FindingCategory.PERMISSION, Severity.LOW, "Low perm", "desc")
         )
         val result = classifier.classify(findings)
-        assertNull(result.classification)
+        assertTrue(result.classification?.contains("No Malicious", ignoreCase = true) == true)
+        assertTrue(result.remediations.isEmpty())
     }
 
     @Test
@@ -33,11 +35,14 @@ class ThreatClassifierTest {
         )
         val result = classifier.classify(findings)
         assertTrue(result.classification?.contains("Ransomware", ignoreCase = true) == true)
+        assertTrue(result.remediations.isNotEmpty())
     }
 
     @Test
     fun ratDetection() {
         val findings = listOf(
+            // Corroborating strong evidence from another engine (e.g. MalwarePatternDetector).
+            Finding(FindingCategory.MALWARE, Severity.CRITICAL, "malware", "confirmed"),
             Finding(FindingCategory.NETWORK, Severity.CRITICAL, "remote socket command exec", "connects and executes system commands")
         )
         val result = classifier.classify(findings)
@@ -48,6 +53,8 @@ class ThreatClassifierTest {
     @Test
     fun bankingTrojanDetection() {
         val findings = listOf(
+            // A real banking trojan also trips a high-fidelity MALWARE rule (e.g. accessibility abuse).
+            Finding(FindingCategory.MALWARE, Severity.CRITICAL, "Accessibility Abuse", "performGlobalAction"),
             Finding(FindingCategory.PACKER, Severity.HIGH, "phishing overlay", "sms stealing overlay attack")
         )
         val result = classifier.classify(findings)
@@ -57,6 +64,7 @@ class ThreatClassifierTest {
     @Test
     fun spywareDetection() {
         val findings = listOf(
+            Finding(FindingCategory.MALWARE, Severity.CRITICAL, "malware", "confirmed"),
             Finding(FindingCategory.PERMISSION, Severity.HIGH, "boot location tracker", "GPS location at boot")
         )
         val result = classifier.classify(findings)
@@ -66,6 +74,7 @@ class ThreatClassifierTest {
     @Test
     fun dropperDetection() {
         val findings = listOf(
+            Finding(FindingCategory.MALWARE, Severity.CRITICAL, "malware", "confirmed"),
             Finding(FindingCategory.CODE, Severity.CRITICAL, "dex class loader install pack", "DexClassLoader INSTALL_PACKAGES")
         )
         val result = classifier.classify(findings)
@@ -94,6 +103,7 @@ class ThreatClassifierTest {
     @Test
     fun remediationsForOverlay() {
         val findings = listOf(
+            Finding(FindingCategory.MALWARE, Severity.CRITICAL, "malware", "confirmed"),
             Finding(FindingCategory.CODE, Severity.HIGH, "phishing overlay", "screen overlay detected")
         )
         val result = classifier.classify(findings)
@@ -120,7 +130,9 @@ class ThreatClassifierTest {
     }
 
     @Test
-    fun findingsWithAllSeverities_classifiedCorrectly() {
+    fun benignAllSeverities_noRemediations() {
+        // Mix of severities across benign categories, but NO strong malware evidence —
+        // must NOT be labelled malicious or produce scary remediations.
         val findings = listOf(
             Finding(FindingCategory.MANIFEST, Severity.INFO, "Info manifest", "info only"),
             Finding(FindingCategory.STRING, Severity.LOW, "Low string", "low severity"),
@@ -130,25 +142,28 @@ class ThreatClassifierTest {
         )
         val result = classifier.classify(findings)
         assertNotNull(result.classification)
-        assertTrue(result.remediations.isNotEmpty())
+        assertTrue(result.classification?.contains("No Malicious", ignoreCase = true) == true)
+        assertTrue(result.remediations.isEmpty())
     }
 
     @Test
-    fun singleInfoFinding_returnsNullClassification() {
+    fun singleInfoFinding_benign() {
         val findings = listOf(
             Finding(FindingCategory.MANIFEST, Severity.INFO, "Info only", "no risk")
         )
         val result = classifier.classify(findings)
-        assertNull(result.classification)
+        assertTrue(result.classification?.contains("No Malicious", ignoreCase = true) == true)
+        assertTrue(result.remediations.isEmpty())
     }
 
     @Test
-    fun onlyLowFindings_noClassification() {
+    fun onlyLowFindings_benign() {
         val findings = (1..3).map {
             Finding(FindingCategory.PERMISSION, Severity.LOW, "Low $it", "minor issue")
         }
         val result = classifier.classify(findings)
-        assertNull(result.classification)
+        assertTrue(result.classification?.contains("No Malicious", ignoreCase = true) == true)
+        assertTrue(result.remediations.isEmpty())
     }
 
     @Test
@@ -164,6 +179,7 @@ class ThreatClassifierTest {
     @Test
     fun remediationsIncludeDisablePermissions() {
         val findings = listOf(
+            Finding(FindingCategory.MALWARE, Severity.CRITICAL, "malware", "confirmed"),
             Finding(FindingCategory.NETWORK, Severity.CRITICAL, "network C2", "c2 server detected")
         )
         val result = classifier.classify(findings)
@@ -176,6 +192,7 @@ class ThreatClassifierTest {
     @Test
     fun remediationsIncludeScanDevice() {
         val findings = listOf(
+            Finding(FindingCategory.MALWARE, Severity.CRITICAL, "malware", "confirmed"),
             Finding(FindingCategory.PERMISSION, Severity.HIGH, "location tracking", "ACCESS_FINE_LOCATION found")
         )
         val result = classifier.classify(findings)
@@ -192,23 +209,14 @@ class ThreatClassifierTest {
             Finding(FindingCategory.CODE, Severity.HIGH, "Exploit", "exploit code")
         )
         val result = classifier.classify(findings)
-        assertNotNull("Classification should be non-null when score >= 15", result.classification)
+        assertNotNull("Classification should be non-null with strong evidence", result.classification)
         assertTrue("Remediations should be populated", result.remediations.isNotEmpty())
-    }
-
-    @Test
-    fun emptyFindingsList_remediationsEmpty() {
-        val result = classifier.classify(emptyList())
-        assertNull(result.classification)
-        assertTrue(
-            "With empty findings, only the default uninstall remediation is added",
-            result.remediations.size == 1 || result.remediations.isEmpty()
-        )
     }
 
     @Test
     fun networkFindings_ratClassification() {
         val findings = listOf(
+            Finding(FindingCategory.MALWARE, Severity.CRITICAL, "malware", "confirmed"),
             Finding(FindingCategory.NETWORK, Severity.HIGH, "remote socket exec", "outbound system commands via socket")
         )
         val result = classifier.classify(findings)
@@ -222,6 +230,7 @@ class ThreatClassifierTest {
     @Test
     fun smsAndInternet_bankingTrojan() {
         val findings = listOf(
+            Finding(FindingCategory.MALWARE, Severity.CRITICAL, "Accessibility Abuse", "performGlobalAction"),
             Finding(FindingCategory.PACKER, Severity.HIGH, "phishing sms overlay", "overlay attack intercepts SMS")
         )
         val result = classifier.classify(findings)
@@ -232,7 +241,7 @@ class ThreatClassifierTest {
         )
     }
 
-    // ---- NEW: Cross-classification guards ----
+    // ---- Cross-classification guards ----
 
     @Test
     fun overlayWithoutPackerCategory_doesNotCrossClassifyAsBanking() {
@@ -240,8 +249,8 @@ class ThreatClassifierTest {
             Finding(FindingCategory.CODE, Severity.HIGH, "phishing overlay", "overlay attack detected")
         )
         val result = classifier.classify(findings)
+        // No strong evidence (CODE is not a malicious category) → benign, and no Banking label.
         val isBanking = result.classification?.contains("Banking") == true
-        // Banking requires PACKER category, so CODE category should NOT match
         assertFalse("Overlay in CODE should not trigger Banking", isBanking)
     }
 
@@ -252,7 +261,6 @@ class ThreatClassifierTest {
         )
         val result = classifier.classify(findings)
         val isBanking = result.classification?.contains("Banking") == true
-        // Banking requires SMS in description/title of same finding
         assertFalse("Overlay without SMS should not trigger Banking", isBanking)
     }
 
@@ -263,7 +271,6 @@ class ThreatClassifierTest {
         )
         val result = classifier.classify(findings)
         val isDropper = result.classification?.contains("Dropper") == true
-        // Dropper requires install_packages in description
         assertFalse("DexLoader without INSTALL_PACKAGES should not trigger Dropper", isDropper)
     }
 
@@ -275,7 +282,6 @@ class ThreatClassifierTest {
         val result = classifier.classify(findings)
         val isRAT = result.classification?.contains("Remote Access") == true ||
                      result.classification?.contains("RAT") == true
-        // RAT requires connect + (system/exec/command) in same finding
         assertFalse("Socket without system exec should not trigger RAT", isRAT)
     }
 
@@ -286,7 +292,6 @@ class ThreatClassifierTest {
         )
         val result = classifier.classify(findings)
         val isSpyware = result.classification?.contains("Spyware") == true
-        // Spyware requires location/camera + boot in same finding
         assertFalse("Location without boot should not trigger Spyware", isSpyware)
     }
 
@@ -297,20 +302,20 @@ class ThreatClassifierTest {
         )
         val result = classifier.classify(findings)
         val isKeylogger = result.classification?.contains("Keylogger") == true ||
-                          result.classification?.contains("Clipboard") == true
-        // Keylogger requires AccessibilityService + clipboard in same finding
+                           result.classification?.contains("Clipboard") == true
         assertFalse("Accessibility without clipboard should not trigger Keylogger", isKeylogger)
     }
 
     @Test
     fun singleFindingWithAllKeywords_classifiesCorrectly() {
         val findings = listOf(
+            Finding(FindingCategory.MALWARE, Severity.CRITICAL, "Accessibility Abuse", "performGlobalAction"),
             Finding(FindingCategory.PACKER, Severity.HIGH, "phishing sms overlay", "SMS stealing overlay attack")
         )
         val result = classifier.classify(findings)
         assertNotNull(result.classification)
         assertTrue(
-            "Single finding with PACKER + overlay + SMS should be Banking Trojan",
+            "PACKER + overlay + SMS corroborated by a high-fidelity MALWARE rule should be Banking Trojan",
             result.classification?.contains("Banking") == true
         )
     }
@@ -318,7 +323,7 @@ class ThreatClassifierTest {
     @Test
     fun emptyFindings_returnsSafeClassification() {
         val result = classifier.classify(emptyList())
-        assertNull(result.classification)
+        assertEquals("Clean Application", result.classification)
     }
 
     @Test
@@ -335,8 +340,47 @@ class ThreatClassifierTest {
         assertNotNull(result.classification)
         assertTrue("Remediations should not exceed 5", result.remediations.size <= 5)
         assertTrue("Remediations should include uninstall", result.remediations.any { it.contains("Uninstall") })
-        // With 2 CRITICAL + 3 HIGH, should have critical-count-based remediation
         assertTrue("With 2 critical findings, should have network isolation or factory reset recommendation",
             result.remediations.any { it.contains("Network") || it.contains("reset") || it.contains("critical") })
+    }
+
+    @Test
+    fun heuristicLowConfidenceMalware_moddedApp_notLabelledMalicious() {
+        // Regression: noisy heuristic MALWARE findings (LOW confidence) from a modded game
+        // with ad SDKs must NOT be labelled RAT / MALICIOUS.
+        val findings = listOf(
+            Finding(FindingCategory.MALWARE, Severity.CRITICAL, "Overlay Phishing", "suspicious API chain",
+                confidence = FindingConfidence.LOW),
+            Finding(FindingCategory.MALWARE, Severity.CRITICAL, "Confirmed Data Exfiltration Chain", "ad SDK signals",
+                confidence = FindingConfidence.LOW),
+            Finding(FindingCategory.NATIVE, Severity.CRITICAL, "Reverse Shell Capability", "system() in native lib"),
+            Finding(FindingCategory.NETWORK, Severity.HIGH, "Suspicious Socket", "outbound socket")
+        )
+        val result = classifier.classify(findings)
+        assertTrue(
+            "Heuristic LOW-confidence MALWARE must not produce a malicious label (got ${result.classification})",
+            result.classification?.contains("No Malicious", ignoreCase = true) == true
+        )
+        assertTrue("No scary remediations for a benign/modded app", result.remediations.isEmpty())
+    }
+
+    @Test
+    fun twoMediumHighFidelityMalware_isLabelledMalicious() {
+        // Regression: two high-fidelity MEDIUM MALWARE findings (e.g. Keylogger + Accessibility
+        // Abuse combos from MalwarePatternDetector) are genuine malware and MUST be labelled
+        // malicious — not "No Malicious Behavior Detected".
+        val findings = listOf(
+            Finding(FindingCategory.MALWARE, Severity.MEDIUM, "Keylogger", "KeyEvent + InputMethodService",
+                confidence = FindingConfidence.MEDIUM),
+            Finding(FindingCategory.MALWARE, Severity.MEDIUM, "Accessibility Abuse", "performGlobalAction",
+                confidence = FindingConfidence.MEDIUM)
+        )
+        val result = classifier.classify(findings)
+        assertFalse(
+            "Two high-fidelity MEDIUM MALWARE findings must NOT be benign (got ${result.classification})",
+            result.classification?.contains("No Malicious", ignoreCase = true) == true
+        )
+        assertNotNull("Genuine malware must have a non-null classification", result.classification)
+        assertTrue("Genuine malware must produce remediations", result.remediations.isNotEmpty())
     }
 }

@@ -83,7 +83,7 @@ fun HomeScreen(modifier: Modifier = Modifier) {
     }
 
     LaunchedEffect(scanState.errorMessage) {
-        if (scanState.errorMessage == "Cancelled" || scanState.errorMessage == "Stopped") {
+        if (scanState.errorMessage == "Cancelled") {
             scanViewModel.reset()
             scanPath = null
             scanName = null
@@ -247,7 +247,7 @@ private fun HomeTab(onScanApk: () -> Unit, onScanXapk: () -> Unit) {
 
         Spacer(modifier = Modifier.height(28.dp))
 
-        // ── Detection engines — 10 layers, full detail ──
+        // ── Detection engines — mirrors the real 9-phase / 38+ engine pipeline ──
         Surface(shape = RoundedCornerShape(10.dp), color = Bg2, modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -257,15 +257,18 @@ private fun HomeTab(onScanApk: () -> Unit, onScanXapk: () -> Unit) {
                         fontWeight = FontWeight.SemiBold, color = Accent)
                 }
                 Spacer(modifier = Modifier.height(12.dp))
-                EngineLine("YARA Rules", "Signature-based detection using auto-updated community YARA rule sets. Catches known malware families, ransomware, trojans, spyware, and exploit kits by pattern-matching against decompiled bytecode and resources.")
-                EngineLine("Malware Hash Database", "Auto-updated cryptographic hash database. Every file hash is checked against a community-fed blocklist of known malicious APK signatures, components, and embedded resources.")
-                EngineLine("ML Random Forest Classifier", "A 10-feature random forest model trained on behavioral patterns, API call density, obfuscation scores, entropy profiles, native library counts, component structures, and export surfaces — produces a calibrated malicious probability score.")
-                EngineLine("Heuristic Behavioral Detection", "Pattern-based behavioral analysis scanning for crypto mining signatures, C2 communication patterns, keylogging indicators, clipboard interception, credential harvesting paths, and anti-analysis evasion techniques.")
-                EngineLine("Data Flow Taint Analysis", "Tracks sensitive data flows through the decompiled call graph: SMS interception, contact exfiltration, location tracking, microphone/camera access, file system enumeration, and network socket sinks — flags unauthorized data movement paths.")
-                EngineLine("Native Library Analysis", "Scans embedded .so shared libraries for suspicious imports, process injection primitives, privilege escalation chains, VM detection routines, emulator checks, rootkit behaviors, and packed/encrypted payload stubs.")
-                EngineLine("Anti-Evasion & Anti-VM Detection", "Identifies code patterns that attempt to detect or evade analysis environments: emulator fingerprinting, debugger detection, sandbox identification, timing-based evasion, and integrity self-checks on the APK binary.")
-                EngineLine("Threat Intelligence — C2 & Domains", "Cross-references decompiled strings, URLs, and IP addresses against an auto-updated threat intelligence database of known C2 servers, malicious domains, phishing infrastructure, and botnet command channels.")
-                EngineLine("MITRE ATT&CK Mapping", "Maps every detection finding to the MITRE ATT&CK for Mobile framework — technique IDs (T-codes), tactic categories, and observable behaviors aligned with industry-standard threat classification.")
+                EngineLine("Manifest & Permission Analysis", "Parses AndroidManifest for exported components, dangerous permissions, and privilege-escalation surfaces; flags debuggable builds, missing protections, and over-broad exports.")
+                EngineLine("Certificate & Signing Analysis", "Inspects APK signing certificates for debug/test keys, weak algorithms (MD5/SHA1), expiry, self-signed and repackaged signatures via deep META-INF inspection.")
+                EngineLine("DEX / Smali / Java Decompilation", "A custom binary DEX parser reconstructs smali and Java stubs, resolves string/field/method tables, and decodes the binary AXML manifest — fully on-device, no external tools or network.")
+                EngineLine("Opcode & Structural Analysis", "DexOpcodeAnalyzer and CfgStructuralAnalyzer examine bytecode patterns, control-flow graphs, and N-gram sequences for obfuscation, packing, and anti-analysis stubs.")
+                EngineLine("Static Code, String & Secret Scanning", "CodeAnalyzer, StringExtractor, and SecretLeakScanner hunt hardcoded API keys, tokens, credentials, and suspicious code patterns across all decompiled sources.")
+                EngineLine("Heuristic Behavioral Detection", "Pattern-based analysis for crypto-miners, keyloggers, SMS/call abuse, clipboard interception, credential harvesting, and accessibility / device-admin abuse.")
+                EngineLine("YARA Signatures & Known Malware Hash DB", "Auto-updated community YARA rules plus a cryptographic hash blocklist catch known malware families, trojans, ransomware, and spyware by pattern and signature.")
+                EngineLine("Native Library (.so) Analysis", "Scans embedded shared libraries for suspicious imports, process-injection primitives, privilege-escalation chains, rootkit behavior, VM/emulator detection, and packed or encrypted payload stubs.")
+                EngineLine("Taint / Data-Flow & API Call-Graph", "TaintAnalyzer and ApiCallGraphAnalyzer track sensitive data flows (SMS, contacts, location, mic/camera) to network sinks and detect dangerous API call chains.")
+                EngineLine("Anti-Evasion, Threat Intel & MITRE ATT&CK", "AntiEvasionDetector and ThreatIntelDB cross-reference C2 IPs/domains; every finding is mapped to MITRE ATT&CK Mobile technique IDs.")
+                EngineLine("ML Random Forest + Privacy & Threat Scoring", "A 10-feature random-forest classifier with PrivacyScorer and ThreatClassifier produce a calibrated threat score, privacy rating, and final classification with remediation.")
+                EngineLine("Mod APK & Environment Detection", "ModApkDetector, PhishingOverlayAnalyzer, ShizukuDetector, VirtualAppDetector, and AccessibilityChainAnalyzer identify repackaged/modded apps, overlay phishing, virtual environments, and accessibility-abuse chains.")
             }
         }
 

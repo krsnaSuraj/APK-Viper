@@ -4,7 +4,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    APK VIPER v1.0.0                         │
+│                    APK VIPER v1.1.0                         │
 ├─────────────────────────────────────────────────────────────┤
 │  Static → Heuristic → Advanced → Deep → Detection → Profiling → Score    │
 │  All analysis runs on-device. Zero data leaves your phone.  │
@@ -20,7 +20,7 @@
 
 # Run tests
 ./gradlew cleanTest testDebugUnitTest
-# → 1133+ tests, all passing (0 failures)
+# → 1194 unit tests, all passing (0 failures)
 
 # Install
 ./gradlew installDebug
@@ -28,30 +28,60 @@
 
 ## Features
 
-### Detection Engines
+### Detection Engines (38+ across a 9-phase pipeline)
 
-| Category | Engines | What They Detect |
-|----------|---------|-----------------|
-| **Static** (5) | ManifestAnalyzer, PermissionAnalyzer, CertificateAnalyzer, CodeAnalyzer, StringExtractor | Manifest issues, dangerous permissions, cert validation, code patterns, hardcoded secrets |
-| **Heuristic** (6) | PackerDetector, ObfuscationDetector, EntropyAnalyzer, MalwarePatternDetector, CryptoMinerDetector, BehavioralDetector | Packers, obfuscation, encrypted payloads, malware sigs, miners, SMS/call abuse |
-| **Advanced** (6) | YaraEngine, NativeAnalyzer, NetworkAnalyzer, DexOpcodeAnalyzer, SDKAnalyzer, TaintAnalyzer | YARA rules, native calls, C2 domains, DEX stats, SDK tracking, data flow |
-| **Deep** (6) | CfgStructuralAnalyzer, ApiCallGraphAnalyzer, OpcodeNgramAnalyzer, AccessibilityChainAnalyzer, BehaviorTimelineAnalyzer, IntentRelationGraphAnalyzer | CFG similarity, API chains, N-gram patterns, accessibility abuse, behavior timeline, intent chains |
-| **Detection** (5) | AntiEvasionDetector, PermissionRiskMatrix, ModApkDetector, SecretLeakScanner, StringDeobfuscator | VM/debugger evasion, permission combos, mod APK detection, leaked secrets, obfuscated strings |
-| **Profiling** (10) | PhishingOverlayAnalyzer, ShizukuDetector, VirtualAppDetector, TinyMLClassifier, ThreatIntelDB, BackgroundResourceMonitor, NativeBehaviorAnalyzer, StringDeobfuscator, NetworkBehaviorProfiler, BehaviorTimelineAnalyzer | Overlay phishing, Shizuku API, virtual environments, ML classification, threat intel, battery abuse, native behaviors |
-| **Scoring** (3) | ThreatScorer, PrivacyScorer, ThreatClassifier | Weighted threat score, privacy risk, classification + remediation |
+| Phase | Engines | What They Detect |
+|-------|---------|------------------|
+| **1 · Extract & Hash** | XapkExtractor, HashUtils (SHA256/MD5), ApkIntegrityVerifier, KnownMalwareDB, KnownGoodDB | File/XAPK extraction, integrity check, known-good & known-bad hash matching |
+| **2 · Decompile** | DecompilerManager, DexParser, SmaliDisassembler, AxmlDecoder, DexOpcodeAnalyzer, TaintAnalyzer (smali) | DEX→Smali→Java stubs, binary AXML manifest decode, opcode & smali-level taint |
+| **3 · Static (13 parallel)** | ManifestAnalyzer, PermissionAnalyzer, CodeAnalyzer, StringExtractor, CertificateAnalyzer, PackerDetector, CryptoMinerDetector, BehavioralDetector, ApiCallGraphAnalyzer, PermissionRiskMatrix, SecretLeakScanner, TinyMLClassifier, TaintAnalyzer | Manifest/permission/cert issues, code & string patterns, hardcoded secrets, miners, behaviors, ML probability |
+| **4 · Deep (3 parallel)** | ObfuscationDetector, EntropyAnalyzer, OpcodeNgramAnalyzer | Obfuscation, entropy, N-gram byte patterns |
+| **5 · Signature & Native (11 parallel)** | MalwarePatternDetector, YaraEngine, NativeAnalyzer, NativeCallGraphCorrelator, NativeBytecodeScanner, NativeLibraryDiffer, EntropyPackerDetector, NetworkAnalyzer, FrameworkIntegrityChecker, CfgStructuralAnalyzer, IntentRelationGraphAnalyzer | YARA rules, native .so behavior, network sinks, CFG similarity, intent graphs, framework tampering |
+| **6 · Supply Chain (2)** | SDKAnalyzer, FrameworkIntegrityChecker | Vulnerable/outdated SDKs, framework integrity |
+| **7 · Anti-Evasion + Intel (2)** | AntiEvasionDetector, ThreatIntelDB | Evasion (debugger/VM/sandbox), C2 IPs & malicious domains |
+| **8 · Behavioral Profiling (9 parallel)** | NativeBehaviorAnalyzer, PhishingOverlayAnalyzer, NetworkBehaviorProfiler, BehaviorTimelineAnalyzer, BackgroundResourceMonitor, ModApkDetector, ShizukuDetector, VirtualAppDetector, AccessibilityChainAnalyzer | Overlay phishing, virtual environments, modded/repackaged apps, accessibility abuse, resource abuse |
+| **9 · Scoring (3)** | PrivacyScorer, ThreatScorer, ThreatClassifier | Privacy risk, weighted threat score, classification + remediation |
 
 ### Additional Capabilities
 
 - **PDF Report Generation** — Multi-page professional PDF with cover page, real app icon (composited from ic_launcher_foreground + ic_launcher_background — no fallbacks), severity gauge, info cards, severity breakdown bar, MITRE ATT&CK table, finding detail cards, remediation checklist, file analysis table
-- **9-Phase Scan Pipeline** — 38+ analyzers running in parallel with cancellation support and per-phase progress
+- **9-Phase Scan Pipeline** — 38+ analyzers running in parallel (supervisorScope + 45s per-analyzer timeout) with cancellation support and per-phase progress
+- **Verdict Gating (FP-safe)** — a MALICIOUS verdict (score ≥ 91) requires ≥ 2 independent *strong* findings; noisy heuristics can at most reach HIGH. See [Verdict Gating](#verdict-gating-false-positive-safety)
 - **Real-time Terminal Log** — Live scan progress with current analyzer activity and dynamic weighted ETA
 - **APK File Monitor** — Background service watching Downloads/ for new APKs
 - **Threat Timeline** — Per-package score trend in dashboard
-- **Scan History** — Room database with timeline queries and package-name grouping
+- **Scan History** — Room database with timeline queries and package-name grouping (confidence + ruleSource preserved)
 - **Auto-Update Engine** — Background rules + hashes + threat intel sync
 - **XAPK Support** — Split APK extraction and per-split analysis
-- **Storage Cleaner** — Temp file cleanup with 50MB+ guard
-- **1133+ Unit Tests** — All passing (0 failures), covering every analyzer, data layer, service, UI logic, and PDF generation
+- **Storage Cleaner** — Temp file cleanup (scan extracts, XAPK dirs, stale logs) with size/age guards
+- **1194 Unit Tests** — All passing (0 failures), covering every analyzer, data layer, service, UI logic, and PDF generation
+
+## What's New in v1.1.0
+
+APK Viper v1.1.0 hardens the scanner so **modded, legitimate, and sideloaded apps are never
+mislabeled as malware / RAT**, and fixes a crash that could occur when scanning large APKs.
+
+### False-Positive Safety (mod-aware)
+- **Benign obfuscation whitelist** — Facebook Audience Network's `redex` tooling emits classes
+  named `Lcom_facebook_ads_redexgen_X_*` whose `new-array → fill-array-data` and dead-code
+  patterns look like encrypted payloads. These are now skipped (mirrors the native-framework
+  downgrade list), eliminating thousands of bogus "Suspicious Opcode Sequence" findings on any
+  app that bundles the Facebook ads SDK.
+- **Keylogger rule requires a real IME** — ordinary keyboard handling (`onKey` / `KeyEvent` /
+  `dispatchKeyEvent`) in games no longer triggers a `Keylogger` verdict. A genuine keylogger
+  needs an `InputMethodService` (or accessibility key-capture), which is now mandatory.
+- **Verdict gate preserved** — a `MALICIOUS` verdict still requires ≥ 2 independent *strong*
+  findings or a known-malware hash; noisy heuristics are capped at `HIGH`.
+
+### Stability
+- **Foreground-service crash fixed** — `ScanForegroundService` now always promotes to foreground
+  (with a safe fallback notification) even on redelivered intents, eliminating
+  `RemoteServiceException$ForegroundServiceDidNotStartInTimeException` on scan resume.
+- **Crash-safe scan coroutine** — `ScanViewModel` and `ApkFileMonitorService` now catch
+  `Throwable` (including R8/ART `VerifyError`) so a single engine or ART error can never kill
+  the process and trigger a redelivery crash.
+- **R8 `-dontoptimize`** added to ProGuard rules to prevent verifier-rejected-class crashes on
+  some devices.
 
 ## Architecture
 
@@ -236,7 +266,48 @@ LOW  █████████████████████████
 MED  ████████████████████████████████████████████████████████ 51-65
 HIGH ████████████████████████████████████████████████████████ 66-80
 CRIT ████████████████████████████████████████████████████████ 81-90
-MAL  ████████████████████████████████████████████████████████ 91-100
+ MAL  ████████████████████████████████████████████████████████ 91-100
+ ```
+
+## Verdict Gating (False-Positive Safety)
+
+A `MALICIOUS` verdict (score ≥ 91) is deliberately hard to reach so that legitimate,
+modded, or sideloaded apps are never mislabeled as malware. This mirrors how top-tier
+detectors (VirusTotal, MobSF, DREBIN) refuse to call an app malware on heuristic volume alone.
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│              VERDICT GATE — False-Positive SAFETY                   │
+├────────────────────────────────────────────────────────────────────┤
+│  Each Finding has confidence ∈ {HIGH, MEDIUM, LOW} and ruleSource.  │
+│  STRONG evidence = confidence != LOW  AND  ruleSource != "community"│
+│                                                                     │
+│  MALICIOUS (score >= 91) is ONLY emitted when:                      │
+│     • a known-malware HASH matched (HIGH),  OR                      │
+│     • >= 2 independent STRONG findings agree                       │
+│                                                                     │
+│  Otherwise the verdict is capped at HIGH (<= 80) — never MALICIOUS. │
+│                                                                     │
+│  High-fidelity malware (Keylogger / Accessibility Abuse /           │
+│  Device-Admin Abuse) emits MEDIUM confidence (strong, not noisy).   │
+│  Noisy heuristics (API chains, data-exfil combos, generic          │
+│  anti-analysis) emit LOW confidence and can NEVER alone drive a     │
+│  MALICIOUS verdict — modded / genuine apps stay capped.            │
+│                                                                     │
+│  Extra FP guards: known-benign obfuscation packages (e.g. Facebook  │
+│  redexgen) are skipped, and the Keylogger rule requires a real IME. │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+```mermaid
+flowchart TD
+    F[Scan Findings] --> G{"\u2265 2 independent STRONG findings\nOR known-malware hash?"}
+    G -- "No" --> CAP["Capped at HIGH \u2264 80\nModded / genuine apps stay safe"]
+    G -- "Yes" --> M["MALICIOUS \u2265 91"]
+    STRONG["STRONG = confidence != LOW\nAND ruleSource != community"] --> G
+    style CAP fill:#22c55e,color:#000
+    style M fill:#ef4444,color:#fff
+    style STRONG fill:#1e293b,color:#fff
 ```
 
 ## Mod APK Detection (3-Tier)

@@ -3,6 +3,8 @@ package com.apkviper.engine.report
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.Drawable
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
@@ -39,6 +41,20 @@ data class MitreTechnique(
 class PdfGenerator(private val context: Context) {
     private val lock = Any()
     private var headerLogo: Bitmap? = null
+
+    // Bundled font (DroidSans) used for ALL PDF text. Android's PdfDocument embeds
+    // Typeface.DEFAULT with an encoding that drops ASCII digit glyphs on some
+    // devices/locales (MITRE IDs, scores, hashes, counts render as boxes). Rendering
+    // with an explicit TTF (embedded as a Type0/CID font with ToUnicode) keeps digits
+    // and Latin text fully readable.
+    private val pdfTypeface: Typeface by lazy {
+        try { Typeface.createFromAsset(context.assets, "DroidSans.ttf") }
+        catch (e: Exception) { Typeface.create("sans-serif", Typeface.NORMAL) }
+    }
+    private val pdfTypefaceBold: Typeface by lazy {
+        try { Typeface.create(Typeface.createFromAsset(context.assets, "DroidSans.ttf"), Typeface.BOLD) }
+        catch (e: Exception) { Typeface.create("sans-serif", Typeface.BOLD) }
+    }
 
     fun generate(result: ScanResult): PdfResult {
         val safeName = result.apkName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
@@ -119,7 +135,7 @@ class PdfGenerator(private val context: Context) {
         else -> mode
     }
 
-    // ── Constants ─────────────────────────────────────────────────
+    // -- Constants -------------------------------------------------
     private val PW = 595f
     private val PH = 842f
     private val PI_W = 595; private val PI_H = 842
@@ -150,23 +166,58 @@ class PdfGenerator(private val context: Context) {
 
     private fun getOrCreateHeaderLogo(): Bitmap {
         if (headerLogo == null) {
-            val bg = androidx.appcompat.content.res.AppCompatResources.getDrawable(context, R.drawable.ic_launcher_background)
-            val fg = androidx.appcompat.content.res.AppCompatResources.getDrawable(context, R.drawable.ic_launcher_foreground)
-            if (bg == null || fg == null) throw IllegalStateException("App icon resources not found")
-            // Render at 1024x1024 for sharp scaling on all display sizes
-            val s = 1024
+            // Use the actual launcher (adaptive) icon so the PDF matches exactly
+            // what is shown on the device home screen - including the system mask.
+            // Rendered at 512px so the heavy downscale to ~18-20px stays crisp
+            // instead of looking pixelated.
+            val d: Drawable = context.packageManager.getApplicationIcon(context.applicationInfo)
+            val s = 512
             val bmp = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
-            val c = android.graphics.Canvas(bmp)
-            bg.setBounds(0, 0, s, s)
-            bg.draw(c)
-            fg.setBounds(0, 0, s, s)
-            fg.draw(c)
+            val c = Canvas(bmp)
+            d.setBounds(0, 0, s, s)
+            d.draw(c)
             headerLogo = bmp
         }
         return headerLogo!!
     }
 
-    // ── Document context ──────────────────────────────────────────
+    // The PDF base font only covers WinAnsi; any other codepoint renders as a
+    // missing-glyph box ("tofu"). Normalise common Unicode punctuation so the
+    // report stays readable.
+    private fun san(t: String): String =
+        t.replace("\u2500", "-").replace("\u2014", "-").replace("\u2013", "-")
+            .replace("\u00b7", "|").replace("\u2192", "->").replace("\u2018", "'")
+            .replace("\u2019", "'").replace("\u201c", "\"").replace("\u201d", "\"")
+            .replace("\u2026", "...").replace("\u00b2", "^2")
+            .replace("\u2265", ">=").replace("\u2264", "<=")
+
+    // A finding is never presented at a severity higher than the final gated
+    // verdict. This keeps the report internally consistent: a SAFE scan must not
+    // headline CRITICAL "malware" findings. Raw heuristic signals are retained as
+    // lower-severity observations instead of disappearing entirely.
+    private fun displayCap(level: ThreatLevel): Severity = when (level) {
+        ThreatLevel.SAFE -> Severity.INFO
+        ThreatLevel.LOW -> Severity.LOW
+        ThreatLevel.MEDIUM -> Severity.MEDIUM
+        ThreatLevel.HIGH -> Severity.HIGH
+        ThreatLevel.CRITICAL, ThreatLevel.MALICIOUS -> Severity.CRITICAL
+    }
+
+    // When a finding is downgraded by displayCap, strip any embedded severity
+    // adjective from its title so an INFO section does not headline a
+    // "NATIVE CRITICAL: ..." label. e.g. "NATIVE CRITICAL: DNS Tunneling Chain"
+    // becomes "NATIVE: DNS Tunneling Chain" once shown as an observation.
+    private val SEV_WORD_RE = Regex("(?i)\\b(CRITICAL|HIGH|MEDIUM|LOW)\\s*:?\\s*")
+    private fun retitleForDisplay(title: String, original: Severity, display: Severity): String {
+        if (original == display) return title
+        return SEV_WORD_RE.replace(title, "")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .removePrefix(":")
+            .trim()
+    }
+
+    // -- Document context ------------------------------------------
 
     private inner class DocCtx(
         val doc: PdfDocument,
@@ -177,7 +228,7 @@ class PdfGenerator(private val context: Context) {
         var num: Int
     )
 
-    // ── Helpers ───────────────────────────────────────────────────
+    // -- Helpers ---------------------------------------------------
 
     private fun lineHeight(sz: Float): Float = sz * 1.45f
 
@@ -195,36 +246,49 @@ class PdfGenerator(private val context: Context) {
     }
 
     private fun wrap(ctx: DocCtx, text: String, x: Float, maxW: Float, sz: Float, color: Int, gap: Float = 0f) {
-        val lines = wrapText(text, maxW, sz, ctx.p)
+        val lines = wrapText(san(text), maxW, sz, ctx.p)
         val lh = lineHeight(sz)
         for (line in lines) {
             brk(ctx, lh + gap)
-            ctx.p.apply { this.color = color; textSize = sz; typeface = Typeface.DEFAULT }
+            ctx.p.apply { this.color = color; textSize = sz; typeface = pdfTypeface }
             ctx.c.drawText(line, x, ctx.y, ctx.p)
             ctx.y += lh + gap
         }
     }
 
-    // ── Document structure ────────────────────────────────────────
+    // -- Document structure ----------------------------------------
 
     private fun writePdfContent(document: PdfDocument, result: ScanResult) {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
-        // ── Page 1: Cover ──
+        // -- Page 1: Cover --
         val coverInfo = PdfDocument.PageInfo.Builder(PI_W, PI_H, 1).create()
         val coverPage = document.startPage(coverInfo)
         drawCover(coverPage.canvas, paint, result)
         document.finishPage(coverPage)
 
-        // ── Page 2+: Report body ──
+        // -- Page 2+: Report body --
         val info = PdfDocument.PageInfo.Builder(PI_W, PI_H, 1).create()
         val page = document.startPage(info)
         val ctx = DocCtx(document, page, page.canvas, paint, TOP_Y, 2)
         drawHeader(ctx, "Executive Summary")
 
-        val grp = result.findings.groupBy { it.severity }
+        // Present findings no higher than the gated verdict (see displayCap).
+        val cap = displayCap(result.threatLevel)
+        val displayFindings = result.findings.map { f ->
+            if (f.severity > cap) f.copy(severity = cap, title = retitleForDisplay(f.title, f.severity, cap))
+            else f
+        }
+        val grp = displayFindings.groupBy { it.severity }
         drawExecutiveSummary(ctx, result)
         drawSeverityBreakdown(ctx, grp)
+
+        // Edge case: a clean scan (no findings at all) still needs a clear,
+        // reassuring statement instead of an empty body.
+        if (result.findings.isEmpty()) {
+            brk(ctx, 60f)
+            drawCleanPanel(ctx)
+        }
 
         brk(ctx, 30f)
         drawSectionDivider(ctx)
@@ -241,16 +305,16 @@ class PdfGenerator(private val context: Context) {
         drawFooter(ctx)
         document.finishPage(ctx.page)
 
-        // ── Findings detail pages — group identical titles, cap at 100 per severity ──
-        val order = listOf(Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW)
+        // -- Findings detail pages - group identical titles, cap at 100 per severity --
+        val order = listOf(Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW, Severity.INFO)
         for (s in order) {
             val rawFindings = grp[s] ?: continue
-            // Group identical titles — show count instead of 5000 individual pages
+            // Group identical titles - show count instead of 5000 individual pages
             val grouped = rawFindings.groupBy { it.title }
                 .map { (_, items) ->
                     if (items.size == 1) items.first()
                     else items.first().copy(
-                        description = "${items.size} occurrences — ${items.first().description}",
+                        description = "${items.size} occurrences - ${items.first().description}",
                         details = if (items.size > 1) items.joinToString("\n") { f ->
                             "  ${f.file ?: ""} ${if (f.line != null) "line ${f.line}" else ""} | ${f.description}"
                         }.take(500) else items.first().details
@@ -260,17 +324,17 @@ class PdfGenerator(private val context: Context) {
                 grouped.take(100) + Finding(
                     category = FindingCategory.CODE, severity = s,
                     title = "${grouped.size - 100} more findings (summary)",
-                    description = "${rawFindings.size} total findings in ${grouped.size} unique titles — showing first 100. Full results available in-app."
+                    description = "${rawFindings.size} total findings in ${grouped.size} unique titles - showing first 100. Full results available in-app."
                 )
             } else grouped
             drawFindingsPage(ctx, result, capped, s)
         }
 
-        // ── Back page ──
+        // -- Back page --
         drawBackPage(ctx)
     }
 
-    // ── COVER PAGE ────────────────────────────────────────────────
+    // -- COVER PAGE ------------------------------------------------
 
     private fun drawCover(canvas: android.graphics.Canvas, p: Paint, r: ScanResult) {
         // Full navy background
@@ -284,17 +348,17 @@ class PdfGenerator(private val context: Context) {
         // Bottom decorative accent bar
         canvas.drawRect(0f, PH - 3f, PW, PH, p)
 
-        // Logo — always the real app icon, no fallbacks
+        // Logo - always the real app icon, no fallbacks
         val logo = getOrCreateHeaderLogo()
         val logoSize = 110f
         val scaled = Bitmap.createScaledBitmap(logo, logoSize.toInt(), logoSize.toInt(), true)
         canvas.drawBitmap(scaled, PW / 2f - logoSize / 2f, 140f, null)
 
         // Title
-        p.apply { color = WHITE; textSize = 36f; typeface = Typeface.DEFAULT_BOLD; textAlign = Paint.Align.CENTER }
+        p.apply { color = WHITE; textSize = 36f; typeface = pdfTypefaceBold; textAlign = Paint.Align.CENTER }
         canvas.drawText("APK Viper", PW / 2f, 300f, p)
 
-        p.apply { color = LIGHT; textSize = 13f; typeface = Typeface.DEFAULT }
+        p.apply { color = LIGHT; textSize = 13f; typeface = pdfTypeface }
         canvas.drawText("Security Analysis Report", PW / 2f, 326f, p)
 
         // Divider
@@ -303,17 +367,21 @@ class PdfGenerator(private val context: Context) {
 
         // App identity
         val displayName = r.appLabel ?: r.packageName ?: r.apkName
-        p.apply { color = WHITE; textSize = 16f; typeface = Typeface.DEFAULT_BOLD; textAlign = Paint.Align.CENTER }
-        canvas.drawText(displayName, PW / 2f, 378f, p)
+        p.apply { color = WHITE; textSize = 16f; typeface = pdfTypefaceBold; textAlign = Paint.Align.CENTER }
+        val maxNameW = PW - 80f
+        val shownName = if (p.measureText(displayName) > maxNameW) {
+            var s = displayName; while (p.measureText("$s...") > maxNameW && s.length > 3) s = s.dropLast(1); "$s..."
+        } else displayName
+        canvas.drawText(shownName, PW / 2f, 378f, p)
 
         if (r.packageName != null) {
-            p.apply { color = LIGHT; textSize = 10f; typeface = Typeface.DEFAULT; textAlign = Paint.Align.CENTER }
-            canvas.drawText(r.packageName, PW / 2f, 398f, p)
+            p.apply { color = LIGHT; textSize = 10f; typeface = pdfTypeface; textAlign = Paint.Align.CENTER }
+            canvas.drawText(san(r.packageName), PW / 2f, 398f, p)
         }
 
         // File info line
-        p.apply { color = 0xFF64748B.toInt(); textSize = 9f; typeface = Typeface.DEFAULT; textAlign = Paint.Align.CENTER }
-        val sizeStr = if (r.fileSize > 0) "  ·  ${formatSize(r.fileSize)}" else ""
+        p.apply { color = 0xFF64748B.toInt(); textSize = 9f; typeface = pdfTypeface; textAlign = Paint.Align.CENTER }
+        val sizeStr = if (r.fileSize > 0) "  |  ${formatSize(r.fileSize)}" else ""
         canvas.drawText("${displayScanMode(r.scanMode)}$sizeStr", PW / 2f, 418f, p)
 
         // Threat score circle
@@ -331,7 +399,7 @@ class PdfGenerator(private val context: Context) {
         canvas.drawCircle(cx, cy, radius, p)
 
         // Score text
-        p.apply { color = WHITE; textSize = 32f; typeface = Typeface.DEFAULT_BOLD; textAlign = Paint.Align.CENTER }
+        p.apply { color = WHITE; textSize = 32f; typeface = pdfTypefaceBold; textAlign = Paint.Align.CENTER }
         canvas.drawText("${r.threatScore}", cx, cy + 11f, p)
 
         // Threat level label
@@ -343,18 +411,18 @@ class PdfGenerator(private val context: Context) {
             ThreatLevel.SAFE -> "SAFE"
             ThreatLevel.MALICIOUS -> "MALICIOUS"
         }
-        p.apply { color = sc; textSize = 14f; typeface = Typeface.DEFAULT_BOLD; textAlign = Paint.Align.CENTER }
+        p.apply { color = sc; textSize = 14f; typeface = pdfTypefaceBold; textAlign = Paint.Align.CENTER }
         canvas.drawText(levelText, cx, cy + radius + 30f, p)
 
         // Findings count
-        p.apply { color = LIGHT; textSize = 10f; typeface = Typeface.DEFAULT; textAlign = Paint.Align.CENTER }
+        p.apply { color = LIGHT; textSize = 10f; typeface = pdfTypeface; textAlign = Paint.Align.CENTER }
         val findingWord = if (r.findings.size == 1) "finding" else "findings"
         canvas.drawText("${r.findings.size} $findingWord", cx, cy + radius + 52f, p)
 
         // Classification badge
         if (r.classification != null) {
-            val cls = r.classification.uppercase()
-            p.apply { color = sc; textSize = 9f; typeface = Typeface.DEFAULT_BOLD; textAlign = Paint.Align.CENTER; style = Paint.Style.STROKE; strokeWidth = 1.5f }
+            val cls = san(r.classification.uppercase())
+            p.apply { color = sc; textSize = 9f; typeface = pdfTypefaceBold; textAlign = Paint.Align.CENTER; style = Paint.Style.STROKE; strokeWidth = 1.5f }
             val cw = p.measureText(cls) + 24f
             canvas.drawRoundRect(cx - cw / 2f, cy + radius + 60f, cx + cw / 2f, cy + radius + 78f, 6f, 6f, p)
             p.style = Paint.Style.FILL
@@ -362,16 +430,16 @@ class PdfGenerator(private val context: Context) {
         }
 
         // Footer info
-        p.apply { color = 0xFF475569.toInt(); textSize = 8f; typeface = Typeface.DEFAULT; textAlign = Paint.Align.CENTER }
+        p.apply { color = 0xFF475569.toInt(); textSize = 8f; typeface = pdfTypeface; textAlign = Paint.Align.CENTER }
         val dtStr = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.US)
             .withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(r.timestamp))
         canvas.drawText("Scanned: $dtStr", cx, 770f, p)
-        canvas.drawText("Generated by APK Viper  ·  On-device analysis  ·  No data leaves your device", cx, 786f, p)
+        canvas.drawText("Generated by APK Viper  |  On-device analysis  |  No data leaves your device", cx, 786f, p)
 
         p.textAlign = Paint.Align.LEFT
     }
 
-    // ── HEADER & FOOTER ───────────────────────────────────────────
+    // -- HEADER & FOOTER -------------------------------------------
 
     private fun drawHeader(ctx: DocCtx, sectionTitle: String?) {
         ctx.p.apply { color = NAVY; style = Paint.Style.FILL }
@@ -381,31 +449,31 @@ class PdfGenerator(private val context: Context) {
         ctx.p.apply { color = AMBER; style = Paint.Style.FILL }
         ctx.c.drawRect(0f, TOP_BAR, PW, TOP_BAR + 2f, ctx.p)
 
-        // Logo — always the real app icon
+        // Logo - always the real app icon
         val logo = getOrCreateHeaderLogo()
         val headerLogoSize = 20f
         val scaled = Bitmap.createScaledBitmap(logo, headerLogoSize.toInt(), headerLogoSize.toInt(), true)
         ctx.c.drawBitmap(scaled, M, TOP_BAR / 2f - headerLogoSize / 2f, null)
 
         // Brand name
-        ctx.p.apply { color = WHITE; textSize = 13f; typeface = Typeface.DEFAULT_BOLD }
+        ctx.p.apply { color = WHITE; textSize = 13f; typeface = pdfTypefaceBold }
         ctx.c.drawText("APK Viper", M + headerLogoSize + 8f, TOP_BAR / 2f + 5f, ctx.p)
 
         // Section title
         if (sectionTitle != null) {
-            ctx.p.apply { color = LIGHT; textSize = 9f; typeface = Typeface.DEFAULT; textAlign = Paint.Align.RIGHT }
+            ctx.p.apply { color = LIGHT; textSize = 9f; typeface = pdfTypeface; textAlign = Paint.Align.RIGHT }
             ctx.c.drawText(sectionTitle, PW - M, TOP_BAR / 2f + 5f, ctx.p)
             ctx.p.textAlign = Paint.Align.LEFT
         }
     }
 
     private fun drawFooter(ctx: DocCtx) {
-        ctx.p.apply { color = LIGHT; textSize = 8f; typeface = Typeface.DEFAULT; textAlign = Paint.Align.RIGHT }
-        ctx.c.drawText("APK Viper Security Report  ·  Page ${ctx.num}", PW - M, BOT_Y, ctx.p)
+        ctx.p.apply { color = LIGHT; textSize = 8f; typeface = pdfTypeface; textAlign = Paint.Align.RIGHT }
+        ctx.c.drawText("APK Viper Security Report  |  Page ${ctx.num}", PW - M, BOT_Y, ctx.p)
         ctx.p.textAlign = Paint.Align.LEFT
     }
 
-    // ── Section divider ───────────────────────────────────────────
+    // -- Section divider -------------------------------------------
 
     private fun drawSectionDivider(ctx: DocCtx) {
         ctx.p.apply { color = SLATE_200; style = Paint.Style.FILL }
@@ -413,7 +481,7 @@ class PdfGenerator(private val context: Context) {
         ctx.y += 12f
     }
 
-    // ── EXECUTIVE SUMMARY ─────────────────────────────────────────
+    // -- EXECUTIVE SUMMARY -----------------------------------------
 
     private fun drawExecutiveSummary(ctx: DocCtx, r: ScanResult) {
         sectionHeader(ctx, "Executive Summary", DARK)
@@ -430,13 +498,13 @@ class PdfGenerator(private val context: Context) {
         val verStr = buildString {
             r.versionName?.let { append(it) }
             r.versionCode?.let { if (isNotEmpty()) append(" ("); append("build $it"); if (contains('(')) append(")") }
-            if (isEmpty()) append("—")
+            if (isEmpty()) append("-")
         }
         drawInfoCard(ctx, M, cardW, "Version", verStr)
         val sdkStr = buildString {
             r.minSdk?.let { append("API $it") }
-            r.targetSdk?.let { append(" → $it") }
-            if (isEmpty()) append("—")
+            r.targetSdk?.let { append(" -> $it") }
+            if (isEmpty()) append("-")
         }
         drawInfoCard(ctx, M + cardW + 10f, cardW, "SDK Range", sdkStr)
         ctx.y += 42f
@@ -458,18 +526,18 @@ class PdfGenerator(private val context: Context) {
         ctx.c.drawCircle(M + 48f, ctx.y + 45f, 32f, ctx.p)
 
         // Score text
-        ctx.p.apply { color = WHITE; textSize = 24f; typeface = Typeface.DEFAULT_BOLD; textAlign = Paint.Align.CENTER }
+        ctx.p.apply { color = WHITE; textSize = 24f; typeface = pdfTypefaceBold; textAlign = Paint.Align.CENTER }
         ctx.c.drawText("${r.threatScore}", M + 48f, ctx.y + 52f, ctx.p)
         ctx.p.textAlign = Paint.Align.LEFT
 
         // Threat level
-        ctx.p.apply { color = WHITE; textSize = 16f; typeface = Typeface.DEFAULT_BOLD }
+        ctx.p.apply { color = WHITE; textSize = 16f; typeface = pdfTypefaceBold }
         ctx.c.drawText(r.threatLevel.name.replace("_", " "), M + 92f, ctx.y + 34f, ctx.p)
 
         // Findings count
         val findingWord = if (r.findings.size == 1) "finding" else "findings"
         ctx.p.apply { color = LIGHT; textSize = 9f }
-        ctx.c.drawText("${r.findings.size} $findingWord  ·  ${formatDuration(r.scanTime)}", M + 92f, ctx.y + 52f, ctx.p)
+        ctx.c.drawText("${r.findings.size} $findingWord  |  ${formatDuration(r.scanTime)}", M + 92f, ctx.y + 52f, ctx.p)
 
         // Timestamp
         val dtStr = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.US)
@@ -479,8 +547,8 @@ class PdfGenerator(private val context: Context) {
 
         // Classification badge
         if (r.classification != null) {
-            val cls = r.classification.uppercase().take(48)
-            ctx.p.apply { color = sc; textSize = 7f; typeface = Typeface.DEFAULT_BOLD; textAlign = Paint.Align.CENTER; style = Paint.Style.STROKE; strokeWidth = 1f }
+            val cls = san(r.classification.uppercase()).take(48)
+            ctx.p.apply { color = sc; textSize = 7f; typeface = pdfTypefaceBold; textAlign = Paint.Align.CENTER; style = Paint.Style.STROKE; strokeWidth = 1f }
             val cw = ctx.p.measureText(cls) + 20f
             ctx.c.drawRoundRect(PW - M - cw - 4f, ctx.y + 6f, PW - M - 4f, ctx.y + 22f, 4f, 4f, ctx.p)
             ctx.p.style = Paint.Style.FILL
@@ -502,29 +570,30 @@ class PdfGenerator(private val context: Context) {
         ctx.c.drawRoundRect(x, ctx.y - 4f, x + w, ctx.y + 28f, 6f, 6f, ctx.p)
         ctx.p.apply { color = LIGHT; textSize = 7f }
         ctx.c.drawText(label, x + 10f, ctx.y + 6f, ctx.p)
-        ctx.p.apply { color = DARK; textSize = 10f; typeface = Typeface.DEFAULT_BOLD }
-        val displayVal = if (ctx.p.measureText(value) > w - 20f) {
-            var s = value.take(40)
+        ctx.p.apply { color = DARK; textSize = 10f; typeface = pdfTypefaceBold }
+        val rawVal = san(value)
+        val displayVal = if (ctx.p.measureText(rawVal) > w - 20f) {
+            var s = rawVal.take(40)
             while (ctx.p.measureText("$s...") > w - 20f && s.length > 3) s = s.dropLast(1)
             "$s..."
-        } else value
+        } else rawVal
         ctx.c.drawText(displayVal, x + 10f, ctx.y + 22f, ctx.p)
     }
 
     private fun sectionHeader(ctx: DocCtx, title: String, color: Int) {
         brk(ctx, 30f)
-        ctx.p.apply { this.color = color; textSize = 16f; typeface = Typeface.DEFAULT_BOLD }
+        ctx.p.apply { this.color = color; textSize = 16f; typeface = pdfTypefaceBold }
         ctx.c.drawText(title, M, ctx.y, ctx.p)
         ctx.y += 24f
     }
 
-    // ── SEVERITY BREAKDOWN ────────────────────────────────────────
+    // -- SEVERITY BREAKDOWN ----------------------------------------
 
     private fun drawSeverityBreakdown(ctx: DocCtx, grp: Map<Severity, List<Finding>>) {
         val total = grp.values.sumOf { it.size }
         if (total == 0) return
         brk(ctx, 80f)
-        ctx.p.apply { color = DARK; textSize = 14f; typeface = Typeface.DEFAULT_BOLD }
+        ctx.p.apply { color = DARK; textSize = 14f; typeface = pdfTypefaceBold }
         ctx.c.drawText("Severity Breakdown", M, ctx.y, ctx.p)
         ctx.y += 20f
 
@@ -553,7 +622,7 @@ class PdfGenerator(private val context: Context) {
             val bc = severityColor(s)
             ctx.p.apply { color = bc; style = Paint.Style.FILL }
             ctx.c.drawRoundRect(bx, ctx.y, bx + 10f, ctx.y + 10f, 3f, 3f, ctx.p)
-            ctx.p.apply { color = MED; textSize = 8f; typeface = Typeface.DEFAULT }
+            ctx.p.apply { color = MED; textSize = 8f; typeface = pdfTypeface }
             val lb = " ${s.name} ($cnt)"
             ctx.c.drawText(lb, bx + 14f, ctx.y + 9f, ctx.p)
             bx += ctx.p.measureText(lb) + 28f
@@ -561,7 +630,21 @@ class PdfGenerator(private val context: Context) {
         ctx.y += 22f
     }
 
-    // ── MITRE ATT&CK ──────────────────────────────────────────────
+    // Clean-scan panel shown when a scan produced zero findings at all.
+    private fun drawCleanPanel(ctx: DocCtx) {
+        val h = 54f
+        ctx.p.apply { color = (GREEN and 0x00FFFFFF) or 0x14000000.toInt(); style = Paint.Style.FILL }
+        ctx.c.drawRoundRect(M, ctx.y, PW - M, ctx.y + h, 8f, 8f, ctx.p)
+        ctx.p.apply { color = GREEN; style = Paint.Style.FILL }
+        ctx.c.drawRoundRect(M, ctx.y, 4f, ctx.y + h, 3f, 3f, ctx.p)
+        ctx.p.apply { color = GREEN; textSize = 13f; typeface = pdfTypefaceBold }
+        ctx.c.drawText("No Malicious Indicators Detected", M + 14f, ctx.y + 22f, ctx.p)
+        ctx.p.apply { color = MED; textSize = 9f; typeface = pdfTypeface }
+        ctx.c.drawText("This file shows no indicators of malicious behavior across all engines", M + 14f, ctx.y + 40f, ctx.p)
+        ctx.y += h + 6f
+    }
+
+    // -- MITRE ATT&CK ----------------------------------------------
 
     private fun drawMitre(ctx: DocCtx, r: ScanResult) {
         val mitre = guessMitreTechniques(r.findings, r.appLabel ?: r.packageName ?: r.apkName)
@@ -574,7 +657,7 @@ class PdfGenerator(private val context: Context) {
         // Table header
         ctx.p.apply { color = SLATE_800; style = Paint.Style.FILL }
         ctx.c.drawRoundRect(M, ctx.y - 4f, PW - M, ctx.y + 16f, 4f, 4f, ctx.p)
-        ctx.p.apply { color = WHITE; textSize = 8f; typeface = Typeface.DEFAULT_BOLD }
+        ctx.p.apply { color = WHITE; textSize = 8f; typeface = pdfTypefaceBold }
         ctx.c.drawText("ID", M + 6f, ctx.y + 9f, ctx.p)
         ctx.c.drawText("Technique", M + cw3[0] + 6f, ctx.y + 9f, ctx.p)
         ctx.c.drawText("Description", M + cw3[0] + cw3[1] + 6f, ctx.y + 9f, ctx.p)
@@ -597,14 +680,14 @@ class PdfGenerator(private val context: Context) {
                 ctx.c.drawRect(M + 2f, ctx.y - 2f, PW - M - 2f, ctx.y + rowH, ctx.p)
             }
 
-            // ── Line 1: ID + count pill + Technique name ──
+            // -- Line 1: ID + count pill + Technique name --
             // ID
-            ctx.p.apply { color = AMBER; textSize = 8f; typeface = Typeface.DEFAULT_BOLD }
+            ctx.p.apply { color = AMBER; textSize = 8f; typeface = pdfTypefaceBold }
             val idW = ctx.p.measureText(t.id)
             ctx.c.drawText(t.id, M + 6f, ctx.y + 4f, ctx.p)
 
             // Count pill (small inline pill right after ID, within ID column)
-            ctx.p.apply { textSize = 6.5f; typeface = Typeface.DEFAULT_BOLD }
+            ctx.p.apply { textSize = 6.5f; typeface = pdfTypefaceBold }
             val countLabel = "${t.findingCount}"
             val pillW = ctx.p.measureText(countLabel) + 10f
             val pillX = M + 6f + idW + 3f
@@ -622,20 +705,20 @@ class PdfGenerator(private val context: Context) {
             }
 
             // Technique name (on same line as ID)
-            ctx.p.apply { color = DARK; textSize = 8f; typeface = Typeface.DEFAULT_BOLD }
-            ctx.c.drawText(truncateText(t.name, cw3[1] - 6f, ctx.p), M + cw3[0] + 6f, ctx.y + 4f, ctx.p)
+            ctx.p.apply { color = DARK; textSize = 8f; typeface = pdfTypefaceBold }
+            ctx.c.drawText(san(truncateText(t.name, cw3[1] - 6f, ctx.p)), M + cw3[0] + 6f, ctx.y + 4f, ctx.p)
 
-            // ── Line 2+: Description ──
+            // -- Line 2+: Description --
             ctx.p.apply { color = MED; textSize = 7f }
             for ((di, dline) in descLines.withIndex()) {
-                ctx.c.drawText(dline, M + cw3[0] + cw3[1] + 6f, ctx.y + 16f + di * 10f, ctx.p)
+                ctx.c.drawText(san(dline), M + cw3[0] + cw3[1] + 6f, ctx.y + 16f + di * 10f, ctx.p)
             }
             ctx.y += rowH + 2f
         }
         ctx.y += 6f
     }
 
-    // ── REMEDIATION ───────────────────────────────────────────────
+    // -- REMEDIATION -----------------------------------------------
 
     private fun drawRemediation(ctx: DocCtx, r: ScanResult) {
         if (r.remediations.isEmpty()) return
@@ -646,7 +729,7 @@ class PdfGenerator(private val context: Context) {
             // Step number badge
             ctx.p.apply { color = RED; style = Paint.Style.FILL }
             ctx.c.drawCircle(M + 7f, ctx.y - 4f, 8f, ctx.p)
-            ctx.p.apply { color = WHITE; textSize = 8f; typeface = Typeface.DEFAULT_BOLD; textAlign = Paint.Align.CENTER }
+            ctx.p.apply { color = WHITE; textSize = 8f; typeface = pdfTypefaceBold; textAlign = Paint.Align.CENTER }
             ctx.c.drawText("${i + 1}", M + 7f, ctx.y, ctx.p)
             ctx.p.textAlign = Paint.Align.LEFT
 
@@ -657,16 +740,16 @@ class PdfGenerator(private val context: Context) {
         ctx.y += 6f
     }
 
-    // ── FILE ANALYSIS ─────────────────────────────────────────────
+    // -- FILE ANALYSIS ---------------------------------------------
 
     private fun drawFileAnalysis(ctx: DocCtx, r: ScanResult) {
         sectionHeader(ctx, "File Analysis", DARK)
 
         val fields = listOfNotNull(
             "Package" to (r.packageName ?: r.apkName.substringBeforeLast(".")),
-            "Version" to (r.versionName ?: "—"),
-            "SDK Min" to (r.minSdk?.let { "API $it" } ?: "—"),
-            "SDK Target" to (r.targetSdk?.let { "API $it" } ?: "—"),
+            "Version" to (r.versionName ?: "-"),
+            "SDK Min" to (r.minSdk?.let { "API $it" } ?: "-"),
+            "SDK Target" to (r.targetSdk?.let { "API $it" } ?: "-"),
             "File Size" to formatSize(r.fileSize),
             "SHA256" to (r.sha256 ?: "N/A"),
             "Threat Score" to "${r.threatScore}/100",
@@ -692,7 +775,7 @@ class PdfGenerator(private val context: Context) {
                 val (l, v) = col1[i]
                 ctx.p.apply { color = LIGHT; textSize = 8f }
                 ctx.c.drawText(l, M + 6f, ctx.y + 3f, ctx.p)
-                ctx.p.apply { color = DARK; textSize = 8f; typeface = Typeface.DEFAULT_BOLD }
+                ctx.p.apply { color = DARK; textSize = 8f; typeface = pdfTypefaceBold }
                 val vw = colW - 70f
                 ctx.c.drawText(truncateText(v, vw, ctx.p), M + 70f, ctx.y + 3f, ctx.p)
             }
@@ -700,7 +783,7 @@ class PdfGenerator(private val context: Context) {
                 val (l, v) = col2[i]
                 ctx.p.apply { color = LIGHT; textSize = 8f }
                 ctx.c.drawText(l, M + colW + 12f, ctx.y + 3f, ctx.p)
-                ctx.p.apply { color = DARK; textSize = 8f; typeface = Typeface.DEFAULT_BOLD }
+                ctx.p.apply { color = DARK; textSize = 8f; typeface = pdfTypefaceBold }
                 val vw = colW - 76f
                 ctx.c.drawText(truncateText(v, vw, ctx.p), M + colW + 76f, ctx.y + 3f, ctx.p)
             }
@@ -709,7 +792,7 @@ class PdfGenerator(private val context: Context) {
         ctx.y += 8f
     }
 
-    // ── FINDINGS DETAIL PAGES ─────────────────────────────────────
+    // -- FINDINGS DETAIL PAGES -------------------------------------
 
     private fun drawFindingsPage(
         ctx: DocCtx, r: ScanResult,
@@ -732,17 +815,17 @@ class PdfGenerator(private val context: Context) {
         ctx.c.drawRect(0f, 0f, PW, 4f, ctx.p)
 
         // Title
-        ctx.p.apply { color = WHITE; textSize = 18f; typeface = Typeface.DEFAULT_BOLD }
+        ctx.p.apply { color = WHITE; textSize = 18f; typeface = pdfTypefaceBold }
         ctx.c.drawText("${s.name} Findings", M, 32f, ctx.p)
 
         // App name and count
-        ctx.p.apply { color = WHITE; textSize = 9f; typeface = Typeface.DEFAULT }
+        ctx.p.apply { color = WHITE; textSize = 9f; typeface = pdfTypeface }
         val appLabel = r.appLabel ?: r.packageName ?: r.apkName
         ctx.c.drawText(truncateText(appLabel, 110f, ctx.p), M, 46f, ctx.p)
         ctx.p.apply { color = WHITE; textSize = 11f }
         ctx.c.drawText("${fgs.size} item${if (fgs.size != 1) "s" else ""} found", M + 120f, 46f, ctx.p)
 
-        // Header logo — always the real app icon
+        // Header logo - always the real app icon
         val logo = getOrCreateHeaderLogo()
         val ls = 18f
         val scaled = Bitmap.createScaledBitmap(logo, ls.toInt(), ls.toInt(), true)
@@ -771,7 +854,7 @@ class PdfGenerator(private val context: Context) {
             // Finding number badge
             ctx.p.apply { color = sc; style = Paint.Style.FILL }
             ctx.c.drawRoundRect(M + 10f, ctx.y - 4f, M + 34f, ctx.y + 14f, 6f, 6f, ctx.p)
-            ctx.p.apply { color = WHITE; textSize = 9f; typeface = Typeface.DEFAULT_BOLD; textAlign = Paint.Align.CENTER }
+            ctx.p.apply { color = WHITE; textSize = 9f; typeface = pdfTypefaceBold; textAlign = Paint.Align.CENTER }
             ctx.c.drawText("${fi + 1}", M + 22f, ctx.y + 10f, ctx.p)
             ctx.p.textAlign = Paint.Align.LEFT
 
@@ -781,8 +864,8 @@ class PdfGenerator(private val context: Context) {
             ctx.p.apply { color = tagBg; style = Paint.Style.FILL }
             val catW = minOf(ctx.p.measureText(catLabel) + 14f, 90f)
             ctx.c.drawRoundRect(M + 40f, ctx.y - 3f, M + 40f + catW, ctx.y + 13f, 4f, 4f, ctx.p)
-            ctx.p.apply { color = sc; textSize = 7f; typeface = Typeface.DEFAULT_BOLD }
-            ctx.c.drawText(catLabel, M + 46f, ctx.y + 10f, ctx.p)
+            ctx.p.apply { color = sc; textSize = 7f; typeface = pdfTypefaceBold }
+            ctx.c.drawText(san(catLabel), M + 46f, ctx.y + 10f, ctx.p)
 
             // Title
             val titleX = M + 44f + catW
@@ -790,29 +873,29 @@ class PdfGenerator(private val context: Context) {
             val displayTitle = if (ctx.p.measureText(f.title) > maxTitleW) {
                 var t = f.title; while (ctx.p.measureText("$t...") > maxTitleW && t.length > 3) t = t.dropLast(1); "$t..."
             } else f.title
-            ctx.p.apply { color = DARK; textSize = 10f; typeface = Typeface.DEFAULT_BOLD }
-            ctx.c.drawText(displayTitle, titleX, ctx.y + 10f, ctx.p)
+            ctx.p.apply { color = DARK; textSize = 10f; typeface = pdfTypefaceBold }
+            ctx.c.drawText(san(displayTitle), titleX, ctx.y + 10f, ctx.p)
             ctx.y += headerH
 
             // Description
-            wrap(ctx, f.description, M + 14f, CW - 16f, 9f, MED, 2f)
+            wrap(ctx, san(f.description), M + 14f, CW - 16f, 9f, MED, 2f)
 
             // Details
             if (f.details != null) {
                 brk(ctx, lhDet)
                 ctx.p.apply { color = LIGHT; textSize = 7.5f }
                 // Detail label
-                ctx.p.typeface = Typeface.DEFAULT_BOLD
+                ctx.p.typeface = pdfTypefaceBold
                 ctx.c.drawText("Details:", M + 14f, ctx.y, ctx.p)
                 ctx.y += lhDet * 0.8f
-                wrap(ctx, f.details, M + 14f, CW - 24f, 7.5f, LIGHT, 1f)
+                wrap(ctx, san(f.details), M + 14f, CW - 24f, 7.5f, LIGHT, 1f)
             }
 
             // File reference
             if (f.file != null) {
                 brk(ctx, 14f)
-                ctx.p.apply { color = 0xFF6366F1.toInt(); textSize = 7f; typeface = Typeface.DEFAULT }
-                ctx.c.drawText("File: ${f.file}${if (f.line != null) " (line ${f.line})" else ""}", M + 14f, ctx.y, ctx.p)
+                ctx.p.apply { color = 0xFF6366F1.toInt(); textSize = 7f; typeface = pdfTypeface }
+                ctx.c.drawText(san("File: ${f.file}${if (f.line != null) " (line ${f.line})" else ""}"), M + 14f, ctx.y, ctx.p)
                 ctx.y += 14f
             }
 
@@ -829,7 +912,7 @@ class PdfGenerator(private val context: Context) {
         ctx.doc.finishPage(ctx.page)
     }
 
-    // ── BACK PAGE ─────────────────────────────────────────────────
+    // -- BACK PAGE -------------------------------------------------
 
     private fun drawBackPage(ctx: DocCtx) {
         ctx.num++
@@ -844,17 +927,17 @@ class PdfGenerator(private val context: Context) {
         ctx.c.drawRect(0f, 0f, PW, 3f, ctx.p)
         ctx.c.drawRect(0f, PH - 3f, PW, PH, ctx.p)
 
-        // Logo — always the real app icon
+        // Logo - always the real app icon
         val bpLogo = getOrCreateHeaderLogo()
         val ls = 56f
         val scaled = Bitmap.createScaledBitmap(bpLogo, ls.toInt(), ls.toInt(), true)
         ctx.c.drawBitmap(scaled, PW / 2f - ls / 2f, 280f, null)
 
         // Title
-        ctx.p.apply { color = AMBER; textSize = 32f; typeface = Typeface.DEFAULT_BOLD; textAlign = Paint.Align.CENTER }
+        ctx.p.apply { color = AMBER; textSize = 32f; typeface = pdfTypefaceBold; textAlign = Paint.Align.CENTER }
         ctx.c.drawText("APK Viper", PW / 2f, 370f, ctx.p)
 
-        ctx.p.apply { color = LIGHT; textSize = 13f; typeface = Typeface.DEFAULT; textAlign = Paint.Align.CENTER }
+        ctx.p.apply { color = LIGHT; textSize = 13f; typeface = pdfTypeface; textAlign = Paint.Align.CENTER }
         ctx.c.drawText("APK Security Analyzer", PW / 2f, 394f, ctx.p)
 
         // Divider
@@ -864,22 +947,22 @@ class PdfGenerator(private val context: Context) {
         // Info
         val dtStr = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", Locale.US)
             .withZone(ZoneId.systemDefault()).format(Instant.now())
-        ctx.p.apply { color = 0xFF64748B.toInt(); textSize = 9f; typeface = Typeface.DEFAULT; textAlign = Paint.Align.CENTER }
+        ctx.p.apply { color = 0xFF64748B.toInt(); textSize = 9f; typeface = pdfTypeface; textAlign = Paint.Align.CENTER }
         ctx.c.drawText("Generated: $dtStr", PW / 2f, 442f, ctx.p)
 
         ctx.p.apply { color = 0xFF475569.toInt(); textSize = 8f }
         ctx.c.drawText("Multi-engine detection: YARA rules, heuristic analysis, taint tracing, and MITRE ATT&CK mapping.", PW / 2f, 470f, ctx.p)
         ctx.c.drawText("All analysis performed on-device. No data leaves your device.", PW / 2f, 486f, ctx.p)
-        ctx.c.drawText("APK Viper v1.0  ·  Open-source security tool", PW / 2f, 502f, ctx.p)
+        ctx.c.drawText("APK Viper v1.1.0  |  Open-source security tool", PW / 2f, 502f, ctx.p)
 
-        ctx.p.apply { color = LIGHT; textSize = 8f; typeface = Typeface.DEFAULT; textAlign = Paint.Align.RIGHT }
-        ctx.c.drawText("APK Viper Security Report  ·  Page ${ctx.num}", PW - M, BOT_Y, ctx.p)
+        ctx.p.apply { color = LIGHT; textSize = 8f; typeface = pdfTypeface; textAlign = Paint.Align.RIGHT }
+        ctx.c.drawText("APK Viper Security Report  |  Page ${ctx.num}", PW - M, BOT_Y, ctx.p)
 
         ctx.p.textAlign = Paint.Align.LEFT
         ctx.doc.finishPage(ctx.page)
     }
 
-    // ── Color helpers ─────────────────────────────────────────────
+    // -- Color helpers ---------------------------------------------
 
     private fun threatColor(tl: ThreatLevel): Int = when (tl) {
         ThreatLevel.SAFE, ThreatLevel.LOW -> GREEN
@@ -893,10 +976,10 @@ class PdfGenerator(private val context: Context) {
         Severity.MEDIUM -> AMBER; Severity.LOW -> BLUE; Severity.INFO -> LIGHT
     }
 
-    // ── Text wrapping ─────────────────────────────────────────────
+    // -- Text wrapping ---------------------------------------------
 
     private fun truncateText(text: String, maxW: Float, p: Paint): String {
-        p.typeface = Typeface.DEFAULT
+        p.typeface = pdfTypeface
         if (p.measureText(text) <= maxW) return text
         var s = text
         while (p.measureText("$s...") > maxW && s.length > 3) s = s.dropLast(1)
@@ -906,7 +989,7 @@ class PdfGenerator(private val context: Context) {
     private fun wrapText(text: String, maxW: Float, sz: Float, p: Paint): List<String> {
         if (text.isEmpty()) return listOf("")
         p.textSize = sz
-        p.typeface = Typeface.DEFAULT
+        p.typeface = pdfTypeface
         val lines = mutableListOf<String>()
         // Split on whitespace, collapse multiple spaces, ignore zero-length words
         val words = text.split("\\s+".toRegex()).filter { it.isNotEmpty() }
@@ -914,7 +997,7 @@ class PdfGenerator(private val context: Context) {
         var line = StringBuilder()
         for (word in words) {
             if (line.isEmpty() && p.measureText(word) > maxW) {
-                // Single word doesn't fit — force-break by characters
+                // Single word doesn't fit - force-break by characters
                 var r = word
                 while (r.isNotEmpty()) {
                     var bi = r.length
@@ -941,8 +1024,8 @@ class PdfGenerator(private val context: Context) {
 
     private fun formatSize(bytes: Long): String = when {
         bytes < 1024 -> "$bytes B"
-        bytes < 1024 * 1024 -> "${"%.1f".format(bytes / 1024.0)} KB"
-        else -> "${"%.1f".format(bytes / (1024.0 * 1024))} MB"
+        bytes < 1024 * 1024 -> "${String.format(Locale.US, "%.1f", bytes / 1024.0)} KB"
+        else -> "${String.format(Locale.US, "%.1f", bytes / (1024.0 * 1024))} MB"
     }
 
     private fun formatDuration(ms: Long): String {

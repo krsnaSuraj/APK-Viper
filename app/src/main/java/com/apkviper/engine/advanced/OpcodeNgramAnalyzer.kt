@@ -53,18 +53,18 @@ class OpcodeNgramAnalyzer {
 
         // Build tri-grams (sliding window of 3)
         val ngrams = allOpcodes.windowed(4, 1).map { it.toList() }
-        // Check against known malware N-grams
+        // Check against known malware N-grams. Require an EXACT contiguous match of the full
+        // opcode sequence (not a fuzzy 2/4 match) — fuzzy matching fired on ordinary apps whose
+        // opcodes merely resembled malware. Matches are surfaced as a supporting CODE signal
+        // (not MALWARE/CRITICAL) so they can never alone produce a MALICIOUS verdict.
         malwareNgrams.forEach { (pattern, sig) ->
-            val matches = ngrams.count { tri ->
-                // Fuzzy match — at least 2 of N opcodes in sequence match
-                tri.zip(pattern).count { (a, b) -> a == b } >= maxOf(2, pattern.size / 2 + 1)
-            }
+            val matches = countExactSequence(allOpcodes, pattern)
             if (matches >= 1) {
                 findings.add(Finding(
-                    category = FindingCategory.MALWARE,
-                    severity = sig.severity,
+                    category = FindingCategory.CODE,
+                    severity = Severity.MEDIUM,
                     title = sig.description,
-                    description = "Matched $matches opcode N-gram sequences",
+                    description = "Matched $matches exact opcode N-gram sequence(s) (supporting signal)",
                     details = "Pattern: ${pattern.joinToString(" → ")}"
                 ))
             }
@@ -93,18 +93,35 @@ class OpcodeNgramAnalyzer {
             ))
         }
 
-        // Opcode frequency distribution comparison against malware profile
+        // Opcode frequency distribution comparison against malware profile. Opcode distributions
+        // are remarkably similar across ALL Android apps, so a naive cosine match is a classic
+        // false-positive trap. We only surface it as a low-confidence informational signal and
+        // require an exceptionally high similarity (>0.9) — it can never drive a verdict.
         val similarity = profileSimilarity(allOpcodes, totalInstr)
-        if (similarity > 0.7f) {
+        if (similarity > 0.9f) {
             findings.add(Finding(
-                FindingCategory.MALWARE, Severity.HIGH,
+                FindingCategory.CODE, Severity.LOW,
                 "Malware Opcode Profile Match (${"%.0f".format(similarity * 100)}%)",
-                description = "Opcode frequency distribution closely matches known malware profiles",
-                details = "Cosine similarity: ${"%.2f".format(similarity)} — this opcode mix is characteristic of Android malware families"
+                description = "Opcode frequency distribution closely matches known malware profiles (supporting signal only)",
+                details = "Cosine similarity: ${"%.2f".format(similarity)}"
             ))
         }
 
         return findings
+    }
+
+    /** Counts exact contiguous occurrences of [pattern] within [opcodes]. */
+    private fun countExactSequence(opcodes: List<String>, pattern: List<String>): Int {
+        if (pattern.isEmpty() || opcodes.size < pattern.size) return 0
+        var count = 0
+        for (i in 0..opcodes.size - pattern.size) {
+            var ok = true
+            for (j in pattern.indices) {
+                if (opcodes[i + j] != pattern[j]) { ok = false; break }
+            }
+            if (ok) count++
+        }
+        return count
     }
 
     // Known malware opcode frequency profile (normalized distribution)

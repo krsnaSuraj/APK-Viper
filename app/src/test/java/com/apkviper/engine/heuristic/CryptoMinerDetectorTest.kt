@@ -188,4 +188,27 @@ class CryptoMinerDetectorTest {
         )
         assertTrue(detector.analyze(result).any { it.title == "Crypto Miner Detected" })
     }
+
+    @Test
+    fun minerFindings_useCryptoMinerCategory_notMalware() {
+        // Gate contract: crypto-miner findings must be CRYPTO_MINER (treated as strong evidence
+        // when CRITICAL), never MALWARE. Catch accidental re-categorisation that would bypass
+        // the strong-evidence rule or pollute the MALWARE gate.
+        val code = "stratum+tcp connection\ncryptonight algorithm"
+        val result = DecompileResult(
+            javaSource = mapOf("Miner.java" to code),
+            smaliSource = emptyMap(), manifest = "", resources = emptyMap(),
+            dexFiles = emptyList(), nativeLibs = emptyList(), decompileTimeMs = 0
+        )
+        val findings = detector.analyze(result)
+        assertTrue("Should detect miner", findings.isNotEmpty())
+        assertTrue(
+            "All miner findings must be CRYPTO_MINER (got ${findings.map { it.category }})",
+            findings.all { it.category == FindingCategory.CRYPTO_MINER }
+        )
+        assertTrue(
+            "Critical miners are strong evidence — must be CRITICAL/HIGH, not LOW",
+            findings.none { it.severity == Severity.LOW }
+        )
+    }
 }

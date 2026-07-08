@@ -1,6 +1,7 @@
 package com.apkviper.engine.advanced
 
 import com.apkviper.dex.DexParser
+import com.apkviper.model.FindingCategory
 import com.apkviper.model.Severity
 import org.junit.Assert.*
 import org.junit.Rule
@@ -78,10 +79,12 @@ class OpcodeNgramAnalyzerTest {
     }
 
     @Test
-    fun patternThreshold_threeOfFourMatching_producesFinding() {
+    fun patternThreshold_threeOfFourMatching_notMalicious() {
         val apk = tempFolder.newFile("thresh_match.apk")
         // Instructions: const-string(0x1A), invoke-virtual(0x6E), move-result-object(0x0C), nop(0x00)
-        // Repeated to get >=10 opcodes. 3 out of 4 match Banking Trojan Injection Pattern
+        // Repeated to get >=10 opcodes. This resembles (but does NOT exactly match) a known
+        // malware N-gram pattern. With strict exact-match matching this must NOT produce a
+        // MALWARE/CRITICAL finding — proving the old fuzzy 3/4 match no longer false-positives.
         val opcodes = byteArrayOf(
             0x1A, 0x00, 0x00, 0x00,  // const-string v0
             0x6E.toByte(), 0x10, 0x00, 0x00, 0x00, 0x00, // invoke-virtual {v0}
@@ -107,8 +110,8 @@ class OpcodeNgramAnalyzerTest {
         }
         val findings = analyzer.analyze(apk)
         assertTrue(
-            "Expected at least one finding for 3/4 threshold match, got ${findings.size}",
-            findings.isNotEmpty()
+            "Benign-looking opcode sequence must NOT yield a MALWARE/CRITICAL finding, got ${findings.size} findings",
+            findings.none { it.category == FindingCategory.MALWARE && it.severity == Severity.CRITICAL }
         )
     }
 

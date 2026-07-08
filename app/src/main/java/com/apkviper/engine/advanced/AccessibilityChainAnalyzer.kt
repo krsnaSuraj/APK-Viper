@@ -60,7 +60,7 @@ class AccessibilityChainAnalyzer {
             .map { it.removePrefix("android.permission.") }.toSet()
 
         for ((chainName, requiredPerms, severity) in toxicCombinations) {
-            val permsFound = requiredPerms.filter { it.lowercase() in presentPerms.map { p -> p.lowercase() } }
+            val permsFound = requiredPerms.filter { it.lowercase() in presentPerms }
             if (permsFound.size >= 2) {
                 val apiEvidence = accessibilityApis.count { allCode.contains(it, ignoreCase = true) }
                 val finalSeverity = if (apiEvidence >= 3 && permsFound.size >= 2) {

@@ -67,7 +67,6 @@ class XapkExtractor {
         } catch (e: Exception) { null }
     }
 
-    private var storedManifest: XapkManifestData? = null
     private var extractDir: File? = null
 
     fun extract(context: Context, xapkFile: File): ExtractedXapk = try {
@@ -76,8 +75,8 @@ class XapkExtractor {
                 ?: return ExtractedXapk(File(""), emptyList(), false, "No manifest.json in XAPK")
 
             val manifestJson = zip.getInputStream(manifestEntry).use { it.bufferedReader().readText() }
-            storedManifest = parseManifestJson(manifestJson)
-            if (storedManifest == null) {
+            val parsedManifest = parseManifestJson(manifestJson)
+            if (parsedManifest == null) {
                 return ExtractedXapk(File(""), emptyList(), false, "Invalid manifest.json")
             }
 

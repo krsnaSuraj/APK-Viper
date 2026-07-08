@@ -280,7 +280,16 @@ class ScanPipeline(private val context: Context) {
             context.packageManager.getPackageArchiveInfo(actualApkFile.absolutePath, 0)
         } catch (_: Exception) { null }
         val knownGoodPkg = ai?.packageName ?: ""
-        if (!com.apkviper.engine.malware.KnownGoodDB.isKnownGood(context, knownGoodPkg, actualApkFile.absolutePath)) {
+        // Self-scan guard: APK Viper must never flag its own package (its bundled rules /
+        // dynamic-rule strings legitimately appear in its own code). Treat as known-good and
+        // skip the YARA pass so the scanner cannot detect itself as malware.
+        val isSelfScan = ai?.packageName == context.packageName
+        val knownGood = if (isSelfScan) {
+            true
+        } else {
+            com.apkviper.engine.malware.KnownGoodDB.isKnownGood(context, knownGoodPkg, actualApkFile.absolutePath)
+        }
+        if (!knownGood) {
             val knownMalware = KnownMalwareDB.generateFinding(sha256)
             if (knownMalware != null) {
                 allFindings.add(knownMalware)
@@ -289,6 +298,38 @@ class ScanPipeline(private val context: Context) {
             }
         } else {
             onLog("[+] Known-good app — skipping hash DB to avoid false positive", LineType.SUCCESS)
+        }
+
+        // Self-scan guard: APK Viper must never report itself as a threat. Its own
+        // YARA strings, dynamic rules and bundled code legitimately trip every
+        // heuristic, so instead of running the full pipeline (which would flag the
+        // scanner itself), short-circuit to a clean SAFE result.
+        if (isSelfScan) {
+            onLog("[+] Self-scan detected - APK Viper does not scan itself. Returning clean result.", LineType.SUCCESS)
+            try { if (apkFile.exists()) apkFile.delete() } catch (_: Exception) {}
+            ruleWatcher.stop()
+            val self = ai
+            return@withContext ScanResult(
+                apkName = apkName,
+                apkPath = apkUri,
+                sha256 = sha256,
+                fileSize = actualApkFile.length(),
+                scanMode = "brutal",
+                threatLevel = ThreatLevel.SAFE,
+                threatScore = 0,
+                findings = emptyList(),
+                decompileTime = 0L,
+                scanTime = System.currentTimeMillis() - startTime,
+                classification = null,
+                remediations = emptyList(),
+                appLabel = self?.applicationInfo?.loadLabel(context.packageManager)?.toString() ?: self?.packageName,
+                packageName = self?.packageName,
+                versionName = self?.versionName,
+                versionCode = if (android.os.Build.VERSION.SDK_INT >= 28) self?.longVersionCode
+                else @Suppress("DEPRECATION") self?.versionCode?.toLong(),
+                minSdk = safeMinSdk(self),
+                targetSdk = self?.applicationInfo?.targetSdkVersion?.let { if (it > 0) it else null }
+            )
         }
 
         // Phase 2: Decompile APK with sub-phase progress and timeout
@@ -500,8 +541,7 @@ class ScanPipeline(private val context: Context) {
         supervisorScope {
             val deferred = listOf(
                 async { tryAnalyze("malware") { malwareDetector.analyze(decompiled) } } to "malware",
-                async { tryAnalyze("yara") { yaraEngine.scan(decompiled) } } to "yara",
-                async { tryAnalyze("cert") { certificateAnalyzer.analyze(decompiled) } } to "cert",
+                async { tryAnalyze("yara") { if (isSelfScan) emptyList() else yaraEngine.scan(decompiled) } } to "yara",
                 async { tryAnalyze("deepCert") { certificateAnalyzer.analyzeCertificate(actualApkFile) } } to "deepCert",
                 async { tryAnalyze("native") { nativeAnalyzer.analyze(decompiled) } } to "native",
                 async { tryAnalyze("deepNative") { nativeAnalyzer.deepScan(actualApkFile, decompiled.nativeLibs, decompiled.nativeLibBytes) } } to "deepNative",
@@ -716,7 +756,19 @@ class ScanPipeline(private val context: Context) {
         onLog("[+] Calculating threat score from ${allFindings.size} findings...", LineType.INFO)
 
         val scanTime = System.currentTimeMillis() - startTime
-        val threatScore = threatScorer.calculate(allFindings)
+        val rawScore = threatScorer.calculate(allFindings, knownGood)
+
+        // Defense-in-depth verdict gate: a MALICIOUS verdict (>=91) requires corroborated
+        // strong malware evidence — a confirmed known-malware hash, or at least two independent
+        // strong findings (curated YARA family, crypto-miner, high-confidence ML). Without it,
+        // benign/modded apps that merely trip noisy heuristics (native syscalls, trackers,
+        // standard permissions, community YARA strings) can at most reach HIGH — never
+        // MALICIOUS. This mirrors how top-tier detectors (VirusTotal, MobSF, DREBIN) refuse to
+        // call an app malware on heuristic volume alone.
+        val threatScore = threatScorer.gateVerdict(rawScore, allFindings, knownGood)
+        if (threatScore < rawScore) {
+            onLog("[+] Verdict gated: insufficient corroborated evidence — capped at HIGH ($threatScore/100)", LineType.SUCCESS)
+        }
         val threatLevel = threatScorer.getThreatLevel(threatScore)
 
         // Phase 9: Privacy Assessment + Threat Classification & Remediation
@@ -796,7 +848,7 @@ class ScanPipeline(private val context: Context) {
             } else {
                 @Suppress("DEPRECATION") val vc = ai?.versionCode; vc?.toLong()
             },
-            minSdk = ai?.applicationInfo?.minSdkVersion?.let { if (it > 0) it else null },
+            minSdk = safeMinSdk(ai),
             targetSdk = ai?.applicationInfo?.targetSdkVersion?.let { if (it > 0) it else null }
         )
     }
@@ -849,17 +901,30 @@ class ScanPipeline(private val context: Context) {
         val score = prediction.maliciousProbability
         val confidence = prediction.confidence
         val confLabel = if (prediction.isUncertain) " (LOW CONFIDENCE)" else ""
-        if (score > 65f) {
+        // CRITICAL is reserved for genuinely high-probability, confident predictions so the
+        // ML signal cannot by itself push a genuine/modded app into MALICIOUS (it is a
+        // supporting signal, not a sole verdict driver).
+        if (score > 85f && !prediction.isUncertain) {
             findings.add(Finding(FindingCategory.BEHAVIORAL,
-                if (prediction.isUncertain) Severity.HIGH else Severity.CRITICAL,
+                Severity.CRITICAL,
                 "ML Classifier: High Malicious Probability$confLabel",
                 "Random forest model predicts ${"%.0f".format(score)}% malicious (${"%.0f".format(confidence*100)}% confidence)",
                 "Perms:$totalPerms API:${"%.0f".format(density)}/kLOC Natives:$nativeCount Components:$componentCount Obf:${"%.2f".format(obfScore)} Loads:$dynamicLoads C2:$c2Count Export:$exportServiceCount"
             ))
+        } else if (score > 70f) {
+            findings.add(Finding(FindingCategory.BEHAVIORAL,
+                if (prediction.isUncertain) Severity.MEDIUM else Severity.HIGH,
+                "ML Classifier: Suspicious$confLabel",
+                "ML scores ${"%.0f".format(score)}% (${"%.0f".format(confidence*100)}% confidence)", null))
+        } else if (score > 50f) {
+            findings.add(Finding(FindingCategory.BEHAVIORAL,
+                Severity.MEDIUM,
+                "ML Classifier: Suspicious$confLabel",
+                "ML scores ${"%.0f".format(score)}% (${"%.0f".format(confidence*100)}% confidence)", null))
         } else if (score > 35f) {
             findings.add(Finding(FindingCategory.BEHAVIORAL,
-                if (prediction.isUncertain) Severity.LOW else Severity.MEDIUM,
-                "ML Classifier: Suspicious$confLabel",
+                Severity.LOW,
+                "ML Classifier: Slightly Suspicious$confLabel",
                 "ML scores ${"%.0f".format(score)}% (${"%.0f".format(confidence*100)}% confidence)", null))
         }
         return findings
@@ -874,13 +939,32 @@ class ScanPipeline(private val context: Context) {
         }
         val rulesFromCache = try {
             val cacheFile = java.io.File(context.filesDir, "yara_rules_cache.yar")
-            if (cacheFile.exists()) cacheFile.readText() else ""
+            if (cacheFile.exists() && cacheFile.length() > 0L) cacheFile.readText() else ""
         } catch (e: Exception) { "" }
 
+        // Prefer the auto-updated cache (it already embeds the curated baseline + filtered
+        // community rules) to avoid duplicating the bundled ruleset.
+        val baseRules = if (rulesFromCache.isNotBlank()) rulesFromCache else rulesFromAsset
         val dynamic = autoUpdateEngine.getDynamicRules()
-        val combined = rulesFromAsset + "\n" + rulesFromCache + "\n" + dynamic
+        val combined = baseRules + "\n" + dynamic
         if (combined.isNotBlank()) {
             yaraEngine.loadRules(combined)
+        }
+    }
+
+    /**
+     * Reads ApplicationInfo.minSdkVersion defensively. The field is only present on newer
+     * platform stubs (API 24+); some test shadows / vendor ROMs lack it, so reflect and
+     * fall back to null instead of throwing.
+     */
+    private fun safeMinSdk(ai: android.content.pm.PackageInfo?): Int? {
+        return try {
+            val appInfo = ai?.applicationInfo ?: return null
+            val f = appInfo.javaClass.getField("minSdkVersion")
+            val v = f.getInt(appInfo)
+            if (v > 0) v else null
+        } catch (_: Exception) {
+            null
         }
     }
 }

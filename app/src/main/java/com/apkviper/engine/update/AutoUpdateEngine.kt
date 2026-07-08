@@ -3,6 +3,8 @@ package com.apkviper.engine.update
 import android.content.Context
 import com.apkviper.engine.advanced.ThreatIntelDB
 import com.apkviper.engine.malware.KnownMalwareDB
+import com.apkviper.model.FindingConfidence
+import com.apkviper.model.Severity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -10,6 +12,23 @@ import okhttp3.Request
 import java.io.File
 import java.util.concurrent.TimeUnit
 
+/**
+ * Auto-update engine — keeps detection current WITHOUT shipping a new app version.
+ *
+ * Sources (all fetched automatically, on a schedule; the user does nothing):
+ *   1. Curated ruleset hosted in OUR repo: rules/android_rules.yar (high confidence).
+ *      When a new Android malware family emerges, a rule is added there and every installed
+ *      app auto-pulls it on next update — no app rebuild, no manual action.
+ *   2. Community signature-base feed (best-effort, LOW confidence): fetched, then filtered to
+ *      drop non-Android rules (webshells, PHP/ASP/JSP, Office, Windows/PE, unsupported YARA
+ *      modules). Surviving rules are tagged `confidence = "low"` so they can never alone (or
+ *      even together) drive a MALICIOUS verdict — they are corroborating signals only.
+ *   3. Known-malware hash feed (signature-base IOCs) — definitive, high confidence.
+ *   4. Threat-intel C2 IP feed (ipsum) — used only for C2 correlation.
+ *
+ * Safety: downloaded rule text is validated (UTF-8, parseable, no forbidden constructs) before
+ * it is cached; on any failure the last-good cache is preserved (fail-safe).
+ */
 class AutoUpdateEngine(private val context: Context) {
 
     private val client = OkHttpClient.Builder()
@@ -17,19 +36,24 @@ class AutoUpdateEngine(private val context: Context) {
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
 
-    // Fallback: use bundled rules when remote is unavailable
+    // Our own curated, Android-only ruleset (future-proof: edit this file in the repo).
+    private val curatedRuleUrl =
+        "https://raw.githubusercontent.com/krsnaSuraj/APK-Viper/main/rules/android_rules.yar"
+
+    // Community Android-relevant rule files (best-effort, low-confidence after filtering).
+    // Any 404 / failure is silently skipped — the engine degrades gracefully.
+    private val communityRuleSources = listOf(
+        "https://raw.githubusercontent.com/Neo23x0/signature-base/master/yara/gen_mobile_malware.yar",
+        "https://raw.githubusercontent.com/Neo23x0/signature-base/master/yara/android_malware.yar"
+    )
+
+    // Fallback: use bundled rules when remote is unavailable.
     private val bundledYara: String by lazy {
         try {
             context.assets.open("yara_rules/default.yar").bufferedReader().use { it.readText() }
         } catch (e: Exception) { "" }
     }
 
-    private val ruleSources = listOf(
-        "https://raw.githubusercontent.com/Neo23x0/signature-base/master/yara/gen_webshells.yar",
-        "https://raw.githubusercontent.com/Neo23x0/signature-base/master/yara/gen_crime_teams.yar",
-    )
-
-    // Always fall back to bundled data when remote feeds are unavailable
     private val bundledHashes: List<KnownMalwareDB.MalwareEntry> by lazy {
         KnownMalwareDB.getAllEntries()
     }
@@ -63,56 +87,141 @@ class AutoUpdateEngine(private val context: Context) {
     }
 
     private suspend fun updateYaraRules(): Pair<Boolean, Int> {
-        var anyDownloaded = false
-        var totalCount = 0
-        val maxSize = 10 * 1024 * 1024
+        val merged = StringBuilder()
+        var curatedOk = false
+        var communityOk = false
 
-        for (url in ruleSources) {
+        // 1) Curated baseline from our repo (high confidence).
+        try {
+            val body = fetchText(curatedRuleUrl)
+            if (body != null && isValidYara(body)) {
+                merged.append("// === CURATED (apk-viper repo) ===\n").append(body).append("\n")
+                curatedOk = true
+            }
+        } catch (_: Exception) {}
+
+        // 2) Community feed (best-effort, filtered + low-confidence).
+        for (url in communityRuleSources) {
             try {
-                val request = Request.Builder().url(url).header("Accept", "text/plain").build()
-                val response = client.newCall(request).execute()
-                if (!response.isSuccessful) continue
-                val body = response.body ?: continue
-
-                val tempFile = File(context.cacheDir, "yara_dl_${url.hashCode()}.tmp")
-                val bodyStream = body.byteStream()
-                val fos = java.io.FileOutputStream(tempFile)
-                var totalBytes = 0L
-                val buffer = ByteArray(8192)
-                var bytesRead: Int
-                while (bodyStream.read(buffer).also { bytesRead = it } != -1) {
-                    totalBytes += bytesRead
-                    if (totalBytes > maxSize) { fos.close(); bodyStream.close(); tempFile.delete(); break }
-                    fos.write(buffer, 0, bytesRead)
+                val body = fetchText(url) ?: continue
+                if (!isValidYara(body)) continue
+                val filtered = filterCommunityRules(body)
+                if (filtered.isNotBlank()) {
+                    merged.append("// === COMMUNITY (low-confidence) ===\n").append(filtered).append("\n")
+                    communityOk = true
                 }
-                fos.close()
-                bodyStream.close()
-                if (totalBytes > maxSize) continue
-
-                val count = countRulesInFile(tempFile)
-                if (count > 0) {
-                    val cacheFile = File(context.filesDir, "yara_rules_cache.yar")
-                    tempFile.copyTo(cacheFile, overwrite = true)
-                    totalCount += count
-                    anyDownloaded = true
-                }
-                tempFile.delete()
             } catch (_: Exception) {}
         }
 
-        if (!anyDownloaded) {
-            val cacheFile = File(context.filesDir, "yara_rules_cache.yar")
-            if (bundledYara.isNotBlank() && (!cacheFile.exists() || cacheFile.length() == 0L)) {
-                cacheFile.writeText(bundledYara)
-                totalCount = countRulesInText(bundledYara)
+        if (curatedOk || communityOk) {
+            val total = countRulesInText(merged.toString())
+            if (total > 0) {
+                val cacheFile = File(context.filesDir, "yara_rules_cache.yar")
+                cacheFile.writeText(merged.toString())
+                return Pair(true, total)
             }
         }
-        return Pair(anyDownloaded, totalCount)
+
+        // Fallback: keep last-good cache, or seed it with bundled rules.
+        val cacheFile = File(context.filesDir, "yara_rules_cache.yar")
+        if (!cacheFile.exists() || cacheFile.length() == 0L) {
+            if (bundledYara.isNotBlank()) {
+                cacheFile.writeText(bundledYara)
+                return Pair(false, countRulesInText(bundledYara))
+            }
+        }
+        return Pair(false, if (cacheFile.exists()) countRulesInFile(cacheFile) else 0)
     }
 
-    private fun countBundledRules(): Int {
-        return countRulesInText(bundledYara)
+    private suspend fun fetchText(url: String): String? {
+        val request = Request.Builder().url(url).header("Accept", "text/plain").build()
+        val response = client.newCall(request).execute()
+        if (!response.isSuccessful) return null
+        return response.body?.string()
     }
+
+    /**
+     * Filters a community ruleset down to Android-relevant, engine-supported rules and tags
+     * them low-confidence. Drops:
+     *  - rules whose name implies a non-Android domain (webshell, php, asp, jsp, office,
+     *    windows, win_, macro, exploit-server, doc/xls/ppt).
+     *  - rules that reference unsupported YARA modules (pe, elf, math, cuckoo, dotnet, ole,
+     *    archive, checksum, dex — our engine only supports text/hex string matching + conditions).
+     * Surviving rules get `confidence = "low"` injected into their meta block.
+     */
+    private fun filterCommunityRules(text: String): String {
+        val forbiddenName = Regex("webshell|\\bphp\\b|\\basp\\b|\\bjsp\\b|office|windows|win_|macro|exploit.?server|\\bdocx?\\b|\\bxlsx?\\b|\\bpptx?\\b|\\bvba\\b", RegexOption.IGNORE_CASE)
+        val forbiddenBody = Regex("\\bpe\\.|\\belf\\.|\\bmath\\.|cuckoo|dotnet|\\bole\\.|archive|\\bdex\\.(section|header)|checksum", RegexOption.IGNORE_CASE)
+
+        val blocks = splitRuleBlocks(text)
+        val kept = mutableListOf<String>()
+        for (block in blocks) {
+            val name = block.lineSequence().firstOrNull { it.trim().startsWith("rule ") } ?: ""
+            if (forbiddenName.containsMatchIn(name)) continue
+            if (forbiddenBody.containsMatchIn(block)) continue
+            kept.add(tagLowConfidence(block))
+        }
+        return kept.joinToString("\n")
+    }
+
+    private fun splitRuleBlocks(text: String): List<String> {
+        val lines = text.lines()
+        val blocks = mutableListOf<String>()
+        val sb = StringBuilder()
+        for (line in lines) {
+            if (line.trim().startsWith("rule ") && sb.isNotEmpty()) {
+                blocks.add(sb.toString())
+                sb.clear()
+            }
+            sb.append(line).append("\n")
+        }
+        if (sb.isNotEmpty()) blocks.add(sb.toString())
+        return blocks
+    }
+
+    private fun tagLowConfidence(block: String): String {
+        // Inject `confidence = "low"` right after the first `meta:` line of the rule.
+        val lines = block.lines().toMutableList()
+        var injected = false
+        for (i in lines.indices) {
+            if (!injected && lines[i].trim().startsWith("meta")) {
+                // find the next non-empty line that is not the closing brace to insert after meta header
+                var j = i + 1
+                while (j < lines.size && lines[j].trim().isEmpty()) j++
+                if (j < lines.size && !lines[j].trim().startsWith("}")) {
+                    lines.add(j, "        confidence = \"low\"")
+                    injected = true
+                }
+                break
+            }
+        }
+        if (!injected) {
+            // No meta block — prepend a meta line inside the rule braces.
+            val out = StringBuilder()
+            var added = false
+            for (line in lines) {
+                out.append(line).append("\n")
+                if (!added && line.trim() == "{") {
+                    out.append("    meta:\n        confidence = \"low\"\n")
+                    added = true
+                }
+            }
+            return out.toString()
+        }
+        return lines.joinToString("\n")
+    }
+
+    private fun isValidYara(text: String): Boolean {
+        if (text.isEmpty()) return false
+        if (text.contains('\u0000')) return false // binary corruption
+        val ruleCount = countRulesInText(text)
+        if (ruleCount == 0) return false
+        // Reject if it references unsupported YARA module imports (would never evaluate correctly).
+        if (Regex("""import\s+""", RegexOption.IGNORE_CASE).containsMatchIn(text)) return false
+        return true
+    }
+
+    private fun countBundledRules(): Int = countRulesInText(bundledYara)
 
     private fun countRulesInFile(file: File): Int {
         if (!file.exists() || file.length() == 0L) return 0
@@ -120,7 +229,7 @@ class AutoUpdateEngine(private val context: Context) {
         file.bufferedReader(charset = Charsets.UTF_8).use { r ->
             var line: String?
             while (r.readLine().also { line = it } != null) {
-                if (line?.startsWith("rule ") == true || line?.startsWith("rule\t") == true) count++
+                if (line?.trimStart()?.startsWith("rule ") == true) count++
             }
         }
         return count
@@ -133,15 +242,18 @@ class AutoUpdateEngine(private val context: Context) {
 
     private suspend fun updateMalwareHashes(): Pair<Boolean, Int> {
         try {
-            val request = Request.Builder().url("https://raw.githubusercontent.com/Neo23x0/signature-base/master/iocs/malware_hashes.txt")
+            val request = Request.Builder().url("https://raw.githubusercontent.com/Neo23x0/signature-base/master/iocs/hash-iocs.txt")
                 .header("Accept", "text/plain").build()
             val response = client.newCall(request).execute()
             if (!response.isSuccessful) return Pair(false, 0)
             val body = response.body?.string() ?: return Pair(false, 0)
 
-            val lines = body.lines().filter { it.length == 64 && it.all { c -> c.isLetterOrDigit() } }
-            if (lines.isNotEmpty()) {
-                val entries = lines.map { KnownMalwareDB.MalwareEntry(it, "Remote Hash Feed", "Community", com.apkviper.model.Severity.CRITICAL) }
+            // signature-base format: "<hash>;<comment>" per line, hash may be MD5/SHA1/SHA256.
+            val hashes = body.lines()
+                .map { it.substringBefore(';').trim() }
+                .filter { it.length in setOf(32, 40, 64) && it.all { c -> c in '0'..'9' || c in 'a'..'f' || c in 'A'..'F' } }
+            if (hashes.isNotEmpty()) {
+                val entries = hashes.map { KnownMalwareDB.MalwareEntry(it.lowercase(), "Remote Hash Feed", "Community", Severity.CRITICAL) }
                 KnownMalwareDB.updateFromRemote(entries)
                 return Pair(true, entries.size)
             }
@@ -168,48 +280,59 @@ class AutoUpdateEngine(private val context: Context) {
         return Pair(false, 0)
     }
 
+    /**
+     * On-device behavioral zero-day rules. These are DELIBERATELY specific so they cannot
+     * false-positive on ordinary apps (or on APK Viper's own code):
+     *  - CryptoMiner requires actual miner indicators (stratum/tcp pools, xmrig, cryptonight,
+     *    randomx, cpuminer, coinhive, mining-pool hostnames) — a normal app using MessageDigest
+     *    + SHA-256 + sockets will NOT trigger.
+     *  - Infostealer requires >=2 PII data sources AND a network exfil primitive AND an encoding
+     *    primitive (Base64/GZIP) — a single telemetry call will not trigger.
+     *  - SilentInstaller requires a package installer primitive AND dynamic DEX loading.
+     */
     fun getDynamicRules(): String {
-        val D = "${'$'}"
         return """
-rule Dynamic_ZeroDay_CryptoMiner {
+ rule Dynamic_ZeroDay_CryptoMiner {
     meta:
         description = "Dynamic behavioral detection for unknown crypto miners"
         family = "ZeroDay"
         severity = "critical"
     strings:
-        ${D}thread = "ThreadPoolExecutor"
-        ${D}hash = "MessageDigest"
-        ${D}alg1 = "SHA-256"
-        ${D}alg2 = "CryptoNight"
-        ${D}alg3 = "RandomX"
-        ${D}loop = "while(true)"
-        ${D}socket = "Socket"
-        ${D}cpu = "Runtime.getRuntime().availableProcessors"
-        ${D}ncpu = "/proc/cpuinfo"
-        ${D}thermal = "/sys/class/thermal"
+        ${'$'}pool1 = "stratum+tcp"
+        ${'$'}pool2 = "stratum+ssl"
+        ${'$'}miner1 = "xmrig"
+        ${'$'}miner2 = "cryptonight"
+        ${'$'}miner3 = "randomx"
+        ${'$'}miner4 = "cpuminer"
+        ${'$'}miner5 = "minerd"
+        ${'$'}miner6 = "coinhive"
+        ${'$'}miner7 = "webminer"
+        ${'$'}miner8 = "xmrpool"
+        ${'$'}miner9 = "mining.pool"
+        ${'$'}miner10 = "monero"
     condition:
-        3 of them
+        2 of (${'$'}pool1, ${'$'}pool2, ${'$'}miner1, ${'$'}miner2, ${'$'}miner3, ${'$'}miner4, ${'$'}miner5, ${'$'}miner6, ${'$'}miner7, ${'$'}miner8, ${'$'}miner9, ${'$'}miner10)
 }
 
 rule Dynamic_ZeroDay_Infostealer {
     meta:
-        description = "Dynamic behavioral detection for unknown infostealers"
+        description = "Detects apps that harvest >=2 PII sources and exfiltrate them encoded"
         family = "ZeroDay"
         severity = "critical"
     strings:
-        ${D}data1 = "getDeviceId"
-        ${D}data2 = "getSubscriberId"
-        ${D}data3 = "getLastKnownLocation"
-        ${D}data4 = "ContactsContract"
-        ${D}data5 = "getAccounts"
-        ${D}send1 = "HttpURLConnection"
-        ${D}send2 = "OkHttpClient"
-        ${D}send3 = "socket"
-        ${D}encode = "Base64"
-        ${D}zipstr = "GZIPOutputStream"
-        ${D}json = "JSONObject"
+        ${'$'}data1 = "getDeviceId"
+        ${'$'}data2 = "getSubscriberId"
+        ${'$'}data3 = "getLastKnownLocation"
+        ${'$'}data4 = "ContactsContract"
+        ${'$'}data5 = "getAccounts"
+        ${'$'}send1 = "HttpURLConnection"
+        ${'$'}send2 = "OkHttpClient"
+        ${'$'}send3 = "socket"
+        ${'$'}encode = "Base64"
+        ${'$'}zipstr = "GZIPOutputStream"
+        ${'$'}json = "JSONObject"
     condition:
-        (${D}send1 or ${D}send2 or ${D}send3) and (${D}encode or ${D}zipstr) and (${D}data1 or ${D}data2 or ${D}data3 or ${D}data4 or ${D}data5)
+        ((${'$'}send1 or ${'$'}send2 or ${'$'}send3) and (${'$'}encode or ${'$'}zipstr) and 2 of (${'$'}data1, ${'$'}data2, ${'$'}data3, ${'$'}data4, ${'$'}data5))
 }
 
 rule Dynamic_ZeroDay_SilentInstaller {
@@ -218,19 +341,19 @@ rule Dynamic_ZeroDay_SilentInstaller {
         family = "ZeroDay"
         severity = "critical"
     strings:
-        ${D}perm1 = "INSTALL_PACKAGES"
-        ${D}perm2 = "REQUEST_INSTALL_PACKAGES"
-        ${D}cmd1 = "pm install"
-        ${D}cmd2 = "installPackage"
-        ${D}dex1 = "DexClassLoader"
-        ${D}dex2 = "PathClassLoader"
-        ${D}ref = "Class.forName"
-        ${D}invoke = "Method.invoke"
-        ${D}apk = ".apk"
-        ${D}write = "FileOutputStream"
-        ${D}download = "URL.openConnection"
+        ${'$'}perm1 = "INSTALL_PACKAGES"
+        ${'$'}perm2 = "REQUEST_INSTALL_PACKAGES"
+        ${'$'}cmd1 = "pm install"
+        ${'$'}cmd2 = "installPackage"
+        ${'$'}dex1 = "DexClassLoader"
+        ${'$'}dex2 = "PathClassLoader"
+        ${'$'}ref = "Class.forName"
+        ${'$'}invoke = "Method.invoke"
+        ${'$'}apk = ".apk"
+        ${'$'}write = "FileOutputStream"
+        ${'$'}download = "URL.openConnection"
     condition:
-        (${D}dex1 or ${D}dex2) and (${D}cmd1 or ${D}cmd2) and (${D}write or ${D}download)
+        ((${'$'}dex1 or ${'$'}dex2) and (${'$'}cmd1 or ${'$'}cmd2) and (${'$'}write or ${'$'}download))
 }
 """
     }

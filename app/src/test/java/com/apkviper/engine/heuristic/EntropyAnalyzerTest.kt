@@ -29,8 +29,8 @@ class EntropyAnalyzerTest {
             dexFiles = emptyList(), nativeLibs = emptyList(), decompileTimeMs = 0
         )
         val findings = analyzer.analyze(result)
-        assertTrue(findings.any { it.title == "Encrypted Assets Detected" })
-        assertEquals(Severity.HIGH, findings.first { it.title == "Encrypted Assets Detected" }.severity)
+        assertTrue(findings.any { it.title == "Manifest References Encryption" })
+        assertEquals(Severity.LOW, findings.first { it.title == "Manifest References Encryption" }.severity)
     }
 
     @Test
@@ -41,7 +41,7 @@ class EntropyAnalyzerTest {
             manifest = manifest, resources = emptyMap(),
             dexFiles = emptyList(), nativeLibs = emptyList(), decompileTimeMs = 0
         )
-        assertTrue(analyzer.analyze(result).any { it.title == "Encrypted Assets Detected" })
+        assertTrue(analyzer.analyze(result).any { it.title == "Manifest References Encryption" })
     }
 
     @Test
@@ -87,7 +87,7 @@ class EntropyAnalyzerTest {
         val highEntropyData = (0..255).flatMap { b -> List(10) { b.toByte() } }.toByteArray()
         val result = DecompileResult(
             javaSource = emptyMap(), smaliSource = emptyMap(),
-            manifest = "", resources = mapOf("classes.dex" to highEntropyData),
+            manifest = "", resources = mapOf("payload.dat" to highEntropyData),
             dexFiles = emptyList(), nativeLibs = emptyList(), decompileTimeMs = 0
         )
         val findings = analyzer.analyze(result)
@@ -111,8 +111,8 @@ class EntropyAnalyzerTest {
         val result = DecompileResult(
             javaSource = emptyMap(), smaliSource = emptyMap(),
             manifest = "", resources = mapOf(
-                "file1.bin" to highEntropyData,
-                "file2.bin" to highEntropyData
+                "file1.dat" to highEntropyData,
+                "file2.dat" to highEntropyData
             ),
             dexFiles = emptyList(), nativeLibs = emptyList(), decompileTimeMs = 0
         )

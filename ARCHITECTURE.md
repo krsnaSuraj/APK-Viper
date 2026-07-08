@@ -2,7 +2,11 @@
 
 ## Overview
 
-APK Viper is an **on-device Android APK security analyzer** — 13K+ lines of Kotlin across 80+ source files, 38+ detection engines, 9-phase scan pipeline. All analysis runs locally with zero network calls. **1133+ unit tests, 0 failures, 100% pass.**
+APK Viper is an **on-device Android APK security analyzer** — 13K+ lines of Kotlin across 80+ source files, 38+ detection engines, 9-phase scan pipeline. All analysis runs locally with zero network calls. **1194 unit tests, 0 failures, 100% pass.**
+
+> **Current release: v1.1.0.** See [README § What's New in v1.1.0](../README.md#whats-new-in-v110) for the
+> false-positive hardening (benign-obfuscation whitelist, Keylogger IME gate) and the foreground-service
+> crash fix.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -57,9 +61,9 @@ Phase 2.5 ─── Process decompiled sources (WITHIN Phase 2 progress bar)
               │ Progress update every 500 sources during join
               │
 Phase 3 ─── Static Analysis (13 in parallel)
-              │ ManifestAnalyzer │ PermissionAnalyzer │ CodeAnalyzer
-              │ StringExtractor │ CertificateAnalyzer │ PackerDetector
-              │ CryptoMinerDetector │ DexOpcodeAnalyzer │ TaintAnalyzer
+               │ ManifestAnalyzer │ PermissionAnalyzer │ CodeAnalyzer
+               │ StringExtractor │ PackerDetector
+               │ CryptoMinerDetector │ DexOpcodeAnalyzer │ TaintAnalyzer
               │ BehavioralDetector │ ApiCallGraphAnalyzer │ PermissionRiskMatrix
               │ SecretLeakScanner │ TinyMLClassifier
               │
@@ -88,7 +92,39 @@ Phase 8 ─── Behavioral Profiling (10 in parallel)
               │
 Phase 9 ─── Scoring (3 sequential)
               │ PrivacyScorer → ThreatScorer → ThreatClassifier
-              │ → ClassificationResult → ScanResult
+               │ → ClassificationResult → ScanResult
+ ```
+
+## Verdict Gate (False-Positive Safety)
+
+A `MALICIOUS` verdict (score ≥ 91) is deliberately hard to reach so legitimate, modded, or
+sideloaded apps are never mislabeled. Each `Finding` carries a `confidence` (HIGH/MEDIUM/LOW)
+and `ruleSource`. **STRONG** evidence = `confidence != LOW` AND `ruleSource != "community"`.
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    VERDICT GATE                                    │
+├──────────────────────────────────────────────────────────────────┤
+│  MALICIOUS (score >= 91) requires:                                 │
+│     • a known-malware HASH match (HIGH),  OR                       │
+│     • >= 2 independent STRONG findings                            │
+│                                                                   │
+│  Else capped at HIGH (<= 80). Noisy heuristics emit LOW          │
+│  confidence and can NEVER alone drive MALICIOUS.                  │
+│  High-fidelity malware (Keylogger / Accessibility / Device-Admin) │
+│  emit MEDIUM (strong, not noisy). Modded apps stay capped.        │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+```mermaid
+flowchart TD
+    F[Scan Findings] --> G{"\u2265 2 STRONG findings\nOR known-malware hash?"}
+    G -- "No" --> CAP["Capped at HIGH \u2264 80"]
+    G -- "Yes" --> M["MALICIOUS \u2265 91"]
+    STRONG["STRONG = confidence != LOW\nAND ruleSource != community"] --> G
+    style CAP fill:#22c55e,color:#000
+    style M fill:#ef4444,color:#fff
+    style STRONG fill:#1e293b,color:#fff
 ```
 
 ```mermaid
@@ -511,7 +547,7 @@ graph TD
 ├────────────────────────────────────────────────────────────────────┤
 │                                                                    │
 │  Framework: JUnit 4.13.2 + Robolectric 4.11.1 + Espresso 3.5.1    │
-│  Total: 1133+ tests, 0 failures, 100% pass                        │
+│  Total: 1100+ tests, 0 failures, 100% pass                        │
 │                                                                    │
 │  ┌──────────────────────────────────────────────────────────┐      │
 │  │                TEST DISTRIBUTION                          │      │

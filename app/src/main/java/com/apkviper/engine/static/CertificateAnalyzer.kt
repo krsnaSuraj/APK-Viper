@@ -1,6 +1,5 @@
 package com.apkviper.engine.static
 
-import com.apkviper.model.DecompileResult
 import com.apkviper.model.Finding
 import com.apkviper.model.FindingCategory
 import com.apkviper.model.Severity
@@ -37,11 +36,6 @@ class CertificateAnalyzer {
     )
 
     private val weakAlgorithms = setOf("MD5withRSA", "MD2withRSA", "SHA1withRSA")
-
-    @Suppress("UNUSED_PARAMETER")
-    fun analyze(decompiled: DecompileResult): List<Finding> {
-        return emptyList()
-    }
 
     /**
      * Parse certificate from APK file META-INF signature
@@ -103,13 +97,15 @@ class CertificateAnalyzer {
                             ))
                         }
 
-                        // Check self-signed
+                        // Check self-signed — informational only. The vast majority of
+                        // legitimately-sideloaded apps (mods, region-locked, direct-download)
+                        // are self-signed; this is NOT malware evidence by itself.
                         if (cert.subjectX500Principal == cert.issuerX500Principal) {
                             findings.add(Finding(
                                 category = FindingCategory.CERTIFICATE,
-                                severity = Severity.MEDIUM,
+                                severity = Severity.INFO,
                                 title = "Self-Signed Certificate",
-                                description = "App is signed with a self-signed certificate (non-Play Store)"
+                                description = "App is signed with a self-signed certificate (common for sideloaded/non-Play apps)"
                             ))
                         }
 
@@ -123,23 +119,25 @@ class CertificateAnalyzer {
                             ))
                         }
 
-                        // Debug cert check
+                        // Debug cert check — informational. A debug subject is normal for
+                        // locally-built / sideloaded apps and is not malware evidence.
                         val subject = cert.subjectX500Principal.name
                         if (subject.contains("Debug") || subject.contains("Test") ||
                             subject.contains("Unknown") || subject.contains("Android")) {
                             findings.add(Finding(
                                 category = FindingCategory.CERTIFICATE,
-                                severity = Severity.MEDIUM,
+                                severity = Severity.INFO,
                                 title = "Debug Certificate",
                                 description = "Subject contains debug/test identifiers: $subject"
                             ))
                         }
 
-                        // Certificate chain depth check
+                        // Certificate chain depth check — informational. Single-cert signing is
+                        // standard for the overwhelming majority of sideloaded Android apps.
                         if (certEntries.size == 1) {
                             findings.add(Finding(
                                 category = FindingCategory.CERTIFICATE,
-                                severity = Severity.MEDIUM,
+                                severity = Severity.INFO,
                                 title = "Single Certificate (No Chain)",
                                 description = "APK signed with single certificate — no certificate chain. Common in side-loaded apps."
                             ))

@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.apkviper.model.*
+import com.apkviper.model.FindingConfidence
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
@@ -182,8 +183,9 @@ class ScanDaoTest {
     @Test
     fun insertWithFindings_roundTrips() = runBlocking {
         val findings = listOf(
-            Finding(FindingCategory.CODE, Severity.CRITICAL, "Remote code exec", "RCE detected", details = "Runtime.exec", file = "Main.java"),
-            Finding(FindingCategory.MANIFEST, Severity.MEDIUM, "Exported activity", "debug", file = "AndroidManifest.xml")
+            Finding(FindingCategory.CODE, Severity.CRITICAL, "Remote code exec", "RCE detected", details = "Runtime.exec", file = "Main.java", confidence = FindingConfidence.HIGH, ruleSource = "known_hash"),
+            Finding(FindingCategory.MANIFEST, Severity.MEDIUM, "Exported activity", "debug", file = "AndroidManifest.xml", confidence = FindingConfidence.LOW, ruleSource = "heuristic"),
+            Finding(FindingCategory.BEHAVIORAL, Severity.HIGH, "Data exfil", "chain", confidence = FindingConfidence.LOW)
         )
         val result = createResult(
             apkName = "findings_test.apk",
@@ -195,10 +197,17 @@ class ScanDaoTest {
         val recent = dao.getRecent()
         assertEquals(1, recent.size)
         val loaded = recent[0]
-        assertEquals(2, loaded.findings.size)
+        assertEquals(3, loaded.findings.size)
         assertEquals(FindingCategory.CODE, loaded.findings[0].category)
         assertEquals("Remote code exec", loaded.findings[0].title)
         assertEquals("Main.java", loaded.findings[0].file)
+        assertEquals(FindingConfidence.HIGH, loaded.findings[0].confidence)
+        assertEquals("known_hash", loaded.findings[0].ruleSource)
+        // Low-confidence heuristic must survive reload or the verdict-gate fix regresses.
+        assertEquals(FindingConfidence.LOW, loaded.findings[1].confidence)
+        assertEquals("heuristic", loaded.findings[1].ruleSource)
+        assertEquals(FindingConfidence.LOW, loaded.findings[2].confidence)
+        assertNull(loaded.findings[2].ruleSource)
         assertEquals(FindingCategory.MANIFEST, loaded.findings[1].category)
     }
 

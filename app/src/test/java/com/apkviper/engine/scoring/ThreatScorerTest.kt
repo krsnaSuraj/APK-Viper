@@ -204,4 +204,60 @@ class ThreatScorerTest {
         val score = scorer.calculate(findings)
         assertTrue("Score should be positive even with empty title/desc", score > 0)
     }
+
+    @Test
+    fun benignApp_manyBenignFindings_notMalicious() {
+        // A realistic genuine app: trackers, standard dangerous perms, obfuscation,
+        // native libs referencing system/execve, normal network — none of these alone
+        // should push the score into MALICIOUS/CRITICAL.
+        val benign = listOf(
+            Finding(FindingCategory.PERMISSION, Severity.MEDIUM, "Dangerous permission", "desc"),
+            Finding(FindingCategory.PERMISSION, Severity.LOW, "Normal permission", "desc"),
+            Finding(FindingCategory.PERMISSION, Severity.LOW, "Normal permission 2", "desc"),
+            Finding(FindingCategory.NATIVE, Severity.LOW, "Native lib references system()", "desc"),
+            Finding(FindingCategory.NETWORK, Severity.LOW, "Network call", "desc"),
+            Finding(FindingCategory.OBFUSCATION, Severity.LOW, "R8/ProGuard obfuscation", "desc"),
+            Finding(FindingCategory.STRING, Severity.LOW, "Hardcoded URL", "desc"),
+            Finding(FindingCategory.MANIFEST, Severity.LOW, "Exported component", "desc"),
+            Finding(FindingCategory.CERTIFICATE, Severity.LOW, "Self-signed cert", "desc"),
+            Finding(FindingCategory.CLOUD, Severity.LOW, "Tracker SDK (Firebase)", "desc")
+        )
+        val score = scorer.calculate(benign)
+        assertTrue("Genuine app must not be MALICIOUS, got $score", score < 91)
+        assertTrue("Genuine app must not be CRITICAL, got $score", score < 81)
+        assertEquals(ThreatLevel.SAFE, scorer.getThreatLevel(score))
+    }
+
+    @Test
+    fun benignApp_withKnownGoodCap_staysLow() {
+        val benign = listOf(
+            Finding(FindingCategory.PERMISSION, Severity.MEDIUM, "Dangerous permission", "desc"),
+            Finding(FindingCategory.CLOUD, Severity.LOW, "Tracker SDK", "desc"),
+            Finding(FindingCategory.OBFUSCATION, Severity.LOW, "Obfuscation", "desc")
+        )
+        val score = scorer.calculate(benign, knownGood = true)
+        assertTrue("Known-good benign app must stay LOW/SAFE, got $score", score <= 12)
+        assertEquals(ThreatLevel.SAFE, scorer.getThreatLevel(score))
+    }
+
+    @Test
+    fun knownGood_withStrongMalwareEvidence_stillHigh() {
+        val findings = listOf(
+            Finding(FindingCategory.MALWARE, Severity.CRITICAL, "Known malware hash match", "desc"),
+            Finding(FindingCategory.PERMISSION, Severity.MEDIUM, "Dangerous permission", "desc")
+        )
+        val score = scorer.calculate(findings, knownGood = true)
+        assertTrue("Even known-good apps with real malware evidence must score high, got $score", score >= 81)
+    }
+
+    @Test
+    fun modApk_lowSeverity_notMalicious() {
+        // A modded/patched APK reported as INFO/LOW must not push the score to malicious.
+        val findings = listOf(
+            Finding(FindingCategory.MANIFEST, Severity.INFO, "Modified/patched APK (mod)", "desc"),
+            Finding(FindingCategory.PERMISSION, Severity.LOW, "Normal permission", "desc")
+        )
+        val score = scorer.calculate(findings)
+        assertTrue("Mod APK (INFO) must not be MALICIOUS, got $score", score < 91)
+    }
 }

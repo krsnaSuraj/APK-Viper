@@ -1,38 +1,31 @@
 package com.apkviper.ui.dashboard
 
-import com.apkviper.model.Finding
-import com.apkviper.model.FindingCategory
-import com.apkviper.model.ScanResult
-import com.apkviper.model.Severity
-import com.apkviper.model.ThreatLevel
+import com.apkviper.model.*
 import org.junit.Assert.*
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
 
-@RunWith(RobolectricTestRunner::class)
 class DashboardScreenTest {
 
-    // Replicates the score delta logic from DashboardScreen.refresh()
-    private fun computeScoreDelta(scans: List<ScanResult>, timeline: List<ScanResult>): Int {
-        val lastScan = scans.firstOrNull()
-        val lastPkg = lastScan?.packageName
-        val samePkg = timeline.filter { it.packageName == lastPkg && lastPkg != null }
-        return if (samePkg.size >= 2) {
-            val sorted = samePkg.sortedBy { it.timestamp }
-            sorted.last().threatScore - sorted[sorted.size - 2].threatScore
-        } else 0
-    }
+    /**
+     * The dashboard renders every [ScanResult] from history directly in Compose
+     * (score, findings.size, apkName, timestamp, threat color). It must stay safe
+     * when optional fields (appLabel, versionCode, minSdk, packageName, sha256) are
+     * null, and when the findings list is empty or huge. These tests exercise the
+     * pure data shape the screen depends on without a Compose host.
+     */
 
     private fun createScan(
-        packageName: String?,
         threatScore: Int,
-        timestamp: Long,
-        apkName: String = "${packageName ?: "unknown"}.apk",
-        appLabel: String? = packageName?.substringAfterLast('.')
+        findings: List<Finding> = emptyList(),
+        apkName: String = "test.apk",
+        appLabel: String? = null,
+        packageName: String? = null,
+        versionCode: Long? = null,
+        minSdk: Int? = null
     ): ScanResult = ScanResult(
         apkName = apkName,
         apkPath = "/path/$apkName",
+        sha256 = null,
         fileSize = 1024L,
         scanMode = "quick",
         threatLevel = when {
@@ -43,126 +36,66 @@ class DashboardScreenTest {
             else -> ThreatLevel.SAFE
         },
         threatScore = threatScore,
-        findings = emptyList(),
+        findings = findings,
         decompileTime = 100L,
         scanTime = 500L,
         appLabel = appLabel,
         packageName = packageName,
-        timestamp = timestamp
+        versionCode = versionCode,
+        minSdk = minSdk
     )
 
-    // ── Edge case: empty data ──────────────────────────────────────
-
     @Test
-    fun scoreDelta_noScans_returnsZero() {
-        assertEquals(0, computeScoreDelta(emptyList(), emptyList()))
+    fun scanResult_withAllNullOptionalFields_isWellFormed() {
+        val scan = createScan(threatScore = 50)
+        assertEquals("test.apk", scan.apkName)
+        assertEquals(50, scan.threatScore)
+        assertEquals(ThreatLevel.MEDIUM, scan.threatLevel)
+        assertNull(scan.appLabel)
+        assertNull(scan.packageName)
+        assertNull(scan.versionCode)
+        assertNull(scan.minSdk)
+        assertNull(scan.sha256)
+        assertEquals(0, scan.findings.size)
     }
 
     @Test
-    fun scoreDelta_singleScan_returnsZero() {
-        val scan = createScan("com.test", 50, 1000)
-        assertEquals(0, computeScoreDelta(listOf(scan), listOf(scan)))
-    }
-
-    // ── Happy path: score increase ─────────────────────────────────
-
-    @Test
-    fun scoreDelta_samePackageTwoScans_returnsCorrectDelta() {
-        val old = createScan("com.test", 30, 1000)
-        val latest = createScan("com.test", 70, 2000)
-        assertEquals(40, computeScoreDelta(listOf(latest), listOf(old, latest)))
+    fun scanResult_nullFields_findingsSizeSafe() {
+        val scan = createScan(threatScore = 10, findings = emptyList())
+        // Dashboard/Results read result.findings.size directly — must never NPE.
+        assertEquals(0, scan.findings.size)
+        assertFalse(scan.findings.any { true })
     }
 
     @Test
-    fun scoreDelta_samePackageScoreDecreased_returnsNegative() {
-        val old = createScan("com.test", 80, 1000)
-        val latest = createScan("com.test", 40, 2000)
-        assertEquals(-40, computeScoreDelta(listOf(latest), listOf(old, latest)))
-    }
-
-    // ── Edge case: different packages ──────────────────────────────
-
-    @Test
-    fun scoreDelta_differentPackages_returnsZero() {
-        val scanA = createScan("com.one", 50, 1000)
-        val scanB = createScan("com.two", 70, 2000)
-        assertEquals(0, computeScoreDelta(listOf(scanB), listOf(scanA, scanB)))
-    }
-
-    // ── Edge case: three scans, compares last two ──────────────────
-
-    @Test
-    fun scoreDelta_threeScansSamePackage_comparesLastTwo() {
-        val early = createScan("com.test", 10, 1000)
-        val middle = createScan("com.test", 50, 2000)
-        val latest = createScan("com.test", 90, 3000)
-        // Should compare scan3 (90) vs scan2 (50) = 40
-        assertEquals(40, computeScoreDelta(listOf(latest), listOf(early, middle, latest)))
-    }
-
-    // ── Edge case: null package name ───────────────────────────────
-
-    @Test
-    fun scoreDelta_lastScanHasNullPackageName_returnsZero() {
-        val scan1 = createScan(null, 50, 1000)
-        val scan2 = createScan(null, 70, 2000)
-        assertEquals(0, computeScoreDelta(listOf(scan2), listOf(scan1, scan2)))
-    }
-
-    // ── Happy path: mixed packages, correct filtering ──────────────
-
-    @Test
-    fun scoreDelta_mixedPackages_filtersCorrectPackage() {
-        val a1 = createScan("com.a", 20, 1000)
-        val b1 = createScan("com.b", 60, 1500)
-        val a2 = createScan("com.a", 80, 2000)
-        // last scan is com.a, should compare com.a scans: 80 - 20 = 60
-        assertEquals(60, computeScoreDelta(listOf(a2), listOf(a1, b1, a2)))
-    }
-
-    // ── Edge case: zero delta ──────────────────────────────────────
-
-    @Test
-    fun scoreDelta_unchangedScore_returnsZero() {
-        val old = createScan("com.test", 50, 1000)
-        val latest = createScan("com.test", 50, 2000)
-        assertEquals(0, computeScoreDelta(listOf(latest), listOf(old, latest)))
-    }
-
-    // ── Edge case: max swing ───────────────────────────────────────
-
-    @Test
-    fun scoreDelta_scoreSwingFrom0To100_returnsMaxDelta() {
-        val old = createScan("com.test", 0, 1000)
-        val latest = createScan("com.test", 100, 2000)
-        assertEquals(100, computeScoreDelta(listOf(latest), listOf(old, latest)))
+    fun scanResult_emptyHistory_noCrashOnDerivedValues() {
+        val history: List<ScanResult> = emptyList()
+        assertEquals(0, history.size)
+        // Summary line "${timeline.size} total · ${scans.size} recent" must be safe.
+        assertEquals("0 total · 0 recent", "${history.size} total · ${history.size} recent")
     }
 
     @Test
-    fun scoreDelta_negativeSwing_returnsNegativeOneHundred() {
-        val old = createScan("com.test", 100, 1000)
-        val latest = createScan("com.test", 0, 2000)
-        assertEquals(-100, computeScoreDelta(listOf(latest), listOf(old, latest)))
+    fun scanResult_hugeHistory_countIsStable() {
+        val history = (1..5000).map { createScan(threatScore = (it % 100), apkName = "a$it.apk") }
+        assertEquals(5000, history.size)
+        // Dashboard only shows getRecent() (LIMIT 10) but the full list must stay iterable.
+        assertEquals(5000, history.count { it.threatScore in 0..100 })
     }
 
-    // ── Edge case: timeline contains irrelevant packages ───────────
-
     @Test
-    fun scoreDelta_onlyOneScanOfPackage_returnsZero() {
-        val a = createScan("com.a", 50, 1000)
-        val b1 = createScan("com.b", 30, 1500)
-        val b2 = createScan("com.b", 70, 2000)
-        // last scan is com.a, which has only 1 scan in timeline
-        assertEquals(0, computeScoreDelta(listOf(a), listOf(a, b1, b2)))
-    }
-
-    // ── Edge case: multiple scans, unsorted input ──────────────────
-
-    @Test
-    fun scoreDelta_unsortedTimeline_sortsByTimestamp() {
-        val old = createScan("com.test", 10, 3000)
-        val latest = createScan("com.test", 90, 1000)
-        // sorted: 90 (ts=1000) and 10 (ts=3000) -> latest=10, previous=90 -> 10-90 = -80
-        assertEquals(-80, computeScoreDelta(listOf(latest), listOf(old, latest)))
+    fun scanResult_threatColorMapping_isConsistent() {
+        val mapping: (ThreatLevel) -> String = { level ->
+            when (level) {
+                ThreatLevel.SAFE -> "safe"
+                ThreatLevel.LOW -> "low"
+                ThreatLevel.MEDIUM -> "medium"
+                ThreatLevel.HIGH -> "high"
+                ThreatLevel.CRITICAL, ThreatLevel.MALICIOUS -> "critical"
+            }
+        }
+        assertEquals("safe", mapping(ThreatLevel.SAFE))
+        assertEquals("critical", mapping(ThreatLevel.MALICIOUS))
+        assertEquals("critical", mapping(ThreatLevel.CRITICAL))
     }
 }

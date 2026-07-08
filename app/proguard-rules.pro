@@ -47,3 +47,10 @@
     public static int e(...);
     public static int wtf(...);
 }
+
+# R8's optimizer (proguard-android-optimize.txt) emits bytecode that fails the
+# ART verifier on some devices (java.lang.VerifyError: register has type
+# Reference but expected Integer), crashing the scan coroutine. Disable only
+# the optimization pass - shrinking + obfuscation are kept so the APK stays
+# small and the rule/engine logic stays hidden.
+-dontoptimize

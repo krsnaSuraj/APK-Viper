@@ -174,13 +174,36 @@ class ScanForegroundService : Service() {
             }
         }
 
-        savePhaseCheckpoint(progress, phase)
-        if (flags and START_FLAG_REDELIVERY == 0) {
-            try { startForeground(NOTIFICATION_ID, buildNotification(progress, phase)) } catch (_: SecurityException) {}
-        } else {
-            updateNotification(progress, phase)
-        }
+        // CRITICAL: promote this service to the foreground IMMEDIATELY, on every start
+        // path (including START_FLAG_REDELIVERY). The OS requires startForeground() to be
+        // called within a short timeout of startForegroundService(); if we skip it (e.g. on
+        // the redelivery branch) or let buildNotification() throw, the service is never
+        // foregrounded and the system kills the whole app with
+        // ForegroundServiceDidNotStartInTimeException. startForegroundSafe() also swallows
+        // ANY exception (not just SecurityException) and falls back to a minimal
+        // notification, so the app can never crash here.
+        startForegroundSafe(progress, phase)
+
+        try { savePhaseCheckpoint(progress, phase) } catch (_: Exception) {}
         return START_REDELIVER_INTENT
+    }
+
+    /** Promote to foreground, tolerating any failure with a minimal fallback notification. */
+    private fun startForegroundSafe(progress: Int, phase: String) {
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification(progress, phase))
+        } catch (_: Throwable) {
+            try {
+                val fallback = NotificationCompat.Builder(this, CHANNEL_ID)
+                    .setContentTitle("APK Viper Scanning")
+                    .setContentText(phase)
+                    .setSmallIcon(R.drawable.ic_notification)
+                    .setOngoing(true)
+                    .setPriority(NotificationCompat.PRIORITY_LOW)
+                    .build()
+                startForeground(NOTIFICATION_ID, fallback)
+            } catch (_: Throwable) { /* nothing else we can do; OS will still time out */ }
+        }
     }
 
     @Volatile private var scanPath: String? = null

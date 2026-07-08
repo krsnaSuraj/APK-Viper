@@ -2,6 +2,7 @@
 
 import com.apkviper.model.DecompileResult
 import com.apkviper.model.FindingCategory
+import com.apkviper.model.FindingConfidence
 import com.apkviper.model.Severity
 import org.junit.Assert.*
 import org.junit.Test
@@ -370,5 +371,90 @@ class YaraEngineTest {
         val result = engine.scan(makeResult(javaSrc = mapOf("A.java" to "ping")))
         assertTrue(result.isNotEmpty())
         assertEquals("Matched known malware signature", result[0].description)
+    }
+
+    // ── Verdict-gate: confidence / ruleSource mapping ──────────────
+    // Community rules (confidence = "low") must be tagged so they can NEVER alone
+    // (or even together) drive a MALICIOUS verdict. Curated rules stay HIGH.
+
+    @Test
+    fun communityRule_mapsToLowConfidenceAndCommunitySource() {
+        val communityRule = yara("""
+            rule Community_Android {
+                meta:
+                    description = "community detection"
+                    confidence = "low"
+                strings:
+                    ${D}a = "encrypt"
+                condition:
+                    ${D}a
+            }
+        """.trimIndent())
+        engine.loadRules(communityRule)
+        val result = engine.scan(makeResult(javaSrc = mapOf("A.java" to "encrypt")))
+        assertTrue("Community rule should still match", result.isNotEmpty())
+        val f = result.first()
+        assertEquals("community", f.ruleSource)
+        assertEquals(FindingConfidence.LOW, f.confidence)
+        assertEquals(FindingCategory.MALWARE, f.category)
+    }
+
+    @Test
+    fun curatedRule_mapsToHighConfidenceAndCuratedSource() {
+        val curatedRule = yara("""
+            rule Curated_RAT {
+                meta:
+                    description = "curated detection"
+                    family = "RAT"
+                strings:
+                    ${D}a = "RemoteInput"
+                condition:
+                    ${D}a
+            }
+        """.trimIndent())
+        engine.loadRules(curatedRule)
+        val result = engine.scan(makeResult(javaSrc = mapOf("A.java" to "RemoteInput")))
+        assertTrue("Curated rule should match", result.isNotEmpty())
+        val f = result.first()
+        assertEquals("curated", f.ruleSource)
+        assertEquals(FindingConfidence.HIGH, f.confidence)
+    }
+
+    @Test
+    fun conditionNotMet_doesNotFire() {
+        // Both strings present in rule, but condition requires BOTH — only one matches.
+        val rule = yara("""
+            rule Both_Required {
+                meta:
+                    description = "needs both"
+                strings:
+                    ${D}s1 = "alpha"
+                    ${D}s2 = "beta"
+                condition:
+                    ${D}s1 and ${D}s2
+            }
+        """.trimIndent())
+        engine.loadRules(rule)
+        val result = engine.scan(makeResult(javaSrc = mapOf("A.java" to "alpha but not the other token")))
+        assertTrue("Rule whose condition is unsatisfied must not fire", result.isEmpty())
+    }
+
+    @Test
+    fun conditionWithNOf_satisfied_fires() {
+        val rule = yara("""
+            rule Two_Of_Three {
+                meta:
+                    description = "2 of 3"
+                strings:
+                    ${D}a = "x1"
+                    ${D}b = "x2"
+                    ${D}c = "x3"
+                condition:
+                    2 of (${D}a, ${D}b, ${D}c)
+            }
+        """.trimIndent())
+        engine.loadRules(rule)
+        val result = engine.scan(makeResult(javaSrc = mapOf("A.java" to "x1 x2")))
+        assertTrue("2 of 3 should satisfy the condition", result.isNotEmpty())
     }
 }

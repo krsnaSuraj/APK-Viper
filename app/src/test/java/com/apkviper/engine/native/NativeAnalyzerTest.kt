@@ -48,7 +48,7 @@ class NativeAnalyzerTest {
         )
         val findings = analyzer.analyze(result)
         assertTrue(findings.any { it.title.contains("Unknown Obfuscated Native Library") })
-        assertEquals(Severity.HIGH, findings.find { it.title.contains("Unknown Obfuscated") }!!.severity)
+        assertEquals(Severity.MEDIUM, findings.find { it.title.contains("Unknown Obfuscated") }!!.severity)
     }
 
     @Test
@@ -94,7 +94,7 @@ class NativeAnalyzerTest {
         }
         val results = analyzer.deepScan(tmp, listOf("lib/armeabi-v7a/libevil.so"))
         assertTrue(results.any { it.title.contains("Reverse Shell Capability") })
-        assertEquals(Severity.CRITICAL, results.find { it.title.contains("Reverse Shell") }!!.severity)
+        assertEquals(Severity.MEDIUM, results.find { it.title.contains("Reverse Shell") }!!.severity)
     }
 
     @Test
@@ -144,7 +144,7 @@ class NativeAnalyzerTest {
         }
         val results = analyzer.deepScan(tmp, listOf("lib/armeabi-v7a/libbad.so"))
         assertTrue(results.any { it.title.contains("Hardcoded URL") })
-        assertEquals(Severity.HIGH, results.find { it.title.contains("Hardcoded URL") }!!.severity)
+        assertEquals(Severity.MEDIUM, results.find { it.title.contains("Hardcoded URL") }!!.severity)
     }
 
     @Test
@@ -241,7 +241,7 @@ class NativeAnalyzerTest {
             zos.closeEntry()
         }
         val results = analyzer.deepScan(tmp, listOf("lib/armeabi-v7a/libencrypted.so"))
-        assertTrue(results.any { it.title.contains("Highly Encrypted") || it.title.contains("Encrypted C2 Payload") })
+        assertTrue(results.any { it.title.contains("High Entropy Native Payload") || it.title.contains("Encrypted C2 Payload") })
     }
 
     @Test

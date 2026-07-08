@@ -38,7 +38,7 @@ class DecompilerManager {
         val startTime = System.currentTimeMillis()
 
         onProgress("Parsing DEX header...")
-        var parseResult = dexParser.parseApk(apkFile, isCancelled)
+        val parseResult = dexParser.parseApk(apkFile, isCancelled)
         val totalClasses = parseResult.classes.size.coerceAtMost(maxClasses)
         onProgress("Parsed $totalClasses classes")
 
@@ -84,7 +84,7 @@ class DecompilerManager {
         val (resources, dexFiles, nativeLibs) = extractBinaries(apkFile)
 
         val duration = System.currentTimeMillis() - startTime
-        onProgress("Decompile complete: ${javaSource.size} classes, ${javaSource.size} smali")
+        onProgress("Decompile complete: ${javaSource.size} classes, ${smaliSource.size} smali")
 
         System.gc()
         return DecompileResult(

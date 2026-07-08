@@ -14,8 +14,7 @@ object FrameworkWhitelist {
     data class FrameworkSignature(
         val name: String,
         val category: String, // "game_engine", "crash_reporter", "runtime", "ad_sdk", "standard_lib"
-        val libPatterns: List<String>,
-        val knownHashes: List<String> = emptyList()
+        val libPatterns: List<String>
     )
 
     val frameworks = listOf(
@@ -38,6 +37,25 @@ object FrameworkWhitelist {
             listOf("libxamarin-app", "libmonodroid", "libmonosgen")),
         FrameworkSignature("Cordova/PhoneGap", "cross_platform",
             listOf("libcordova", "libphonegap")),
+        FrameworkSignature("Firebase C++ SDK", "cross_platform",
+            listOf("libfirebasecpp", "libfirebase", "libadmob")),
+
+        // Media / graphics frameworks (commonly ship versioned/obfuscated .so names)
+        FrameworkSignature("GStreamer", "standard_lib",
+            listOf("libgstreamer", "libgst", "libgstbase")),
+        FrameworkSignature("OpenCV", "standard_lib",
+            listOf("libopencv", "libopencv_world", "libopencv_core")),
+        FrameworkSignature("TensorFlow Lite", "standard_lib",
+            listOf("libtensorflowlite", "libtensorflow", "libtfkernel")),
+        FrameworkSignature("Realm", "standard_lib",
+            listOf("librealm", "librealmjs")),
+
+        // Jetpack / AndroidX / Kotlin native runtime libs (ship arbitrary names)
+        FrameworkSignature("AndroidX / Jetpack", "standard_lib",
+            listOf("libandroidx", "libdatastore", "libcompose", "libskiko", "libkotlin",
+                "libcollection", "liblifecycle", "libnavigation", "libroom")),
+        FrameworkSignature("Google Play Services", "standard_lib",
+            listOf("libgms", "libplay", "libgoogle", "libcrashpadhandler")),
 
         // Crash & analytics reporters
         FrameworkSignature("Firebase Crashlytics", "crash_reporter",

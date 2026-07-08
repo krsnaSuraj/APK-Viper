@@ -1,6 +1,7 @@
 package com.apkviper.engine.advanced
 
 import com.apkviper.model.DecompileResult
+import com.apkviper.model.FindingConfidence
 import com.apkviper.model.Severity
 import org.junit.Assert.*
 import org.junit.Test
@@ -103,6 +104,45 @@ class ApiCallGraphAnalyzerTest {
             "A.java" to "getDeviceId getSubscriberId HttpURLConnection",
             "B.java" to "getOutputStream write"
         )))
+        assertTrue(findings.any { it.title.contains("Device ID Exfiltration") })
+    }
+
+    @Test
+    fun malwareFinding_usesLowConfidence_verdictGateSafe() {
+        // Heuristic MALWARE findings must be LOW confidence so they cannot, alone,
+        // flip a benign/modded app to MALICIOUS (verdict gate requires >=2 STRONG findings).
+        val code = "getDeviceId() getSubscriberId() HttpURLConnection getOutputStream()"
+        val findings = analyzer.analyze(decompile(mapOf("A.java" to code)))
+        assertFalse("Expected at least one MALWARE finding", findings.isEmpty())
+        assertTrue(
+            "All MALWARE findings must be LOW confidence",
+            findings.filter { it.category == com.apkviper.model.FindingCategory.MALWARE }
+                .all { it.confidence == FindingConfidence.LOW }
+        )
+    }
+
+    @Test
+    fun exactlyThreeApis_fromChain_detected() {
+        // Boundary: chain requires >=3 of its APIs to flag.
+        val code = "getDeviceId getSubscriberId HttpURLConnection"
+        val findings = analyzer.analyze(decompile(mapOf("A.java" to code)))
+        assertTrue(findings.any { it.title.contains("Device ID Exfiltration") })
+    }
+
+    @Test
+    fun exactlyTwoApis_fromChain_noFinding() {
+        // Boundary: 2 of 4 APIs must NOT flag.
+        val code = "getDeviceId HttpURLConnection"
+        assertTrue(analyzer.analyze(decompile(mapOf("A.java" to code))).isEmpty())
+    }
+
+    @Test
+    fun nullAllSourceText_fallsBackToJavaSource() {
+        val decompiled = DecompileResult(
+            mapOf("A.java" to "getDeviceId getSubscriberId HttpURLConnection getOutputStream"),
+            mapOf(), "", mapOf(), emptyList(), emptyList(), 0
+        )
+        val findings = analyzer.analyze(decompiled)
         assertTrue(findings.any { it.title.contains("Device ID Exfiltration") })
     }
 }

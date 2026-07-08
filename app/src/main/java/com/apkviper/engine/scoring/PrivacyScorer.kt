@@ -78,14 +78,12 @@ class PrivacyScorer {
         }
 
         if (trackers.isNotEmpty()) {
-            val trackerSeverity = when {
-                trackers.size >= 10 -> Severity.CRITICAL
-                trackers.size >= 5 -> Severity.HIGH
-                else -> Severity.MEDIUM
-            }
+            // Tracking/analytics SDKs are present in the overwhelming majority of genuine apps
+            // (ads, crash reporting, analytics). They are a privacy surface signal, NOT malware
+            // evidence, so they are capped at LOW and contribute only to the (capped) risk surface.
             findings.add(Finding(
                 category = FindingCategory.CLOUD,
-                severity = trackerSeverity,
+                severity = Severity.LOW,
                 title = "${trackers.size} Trackers Detected",
                 description = "App embeds ${trackers.size} tracking SDKs: ${trackers.joinToString(", ")}",
                 details = "Tracking SDKs collect user data for advertising and analytics purposes"
@@ -93,14 +91,11 @@ class PrivacyScorer {
         }
 
         if (dataCategories.isNotEmpty()) {
-            val privSeverity = when {
-                dataCategories.size >= 5 -> Severity.HIGH
-                dataCategories.size >= 3 -> Severity.MEDIUM
-                else -> Severity.LOW
-            }
+            // Standard data-access permissions (location, contacts, etc.) requested in the
+            // manifest are normal for genuine apps. Capped at LOW — not malware evidence.
             findings.add(Finding(
                 category = FindingCategory.PERMISSION,
-                severity = privSeverity,
+                severity = Severity.LOW,
                 title = "${dataCategories.size} Data Categories Accessible",
                 description = "App can access: ${dataCategories.joinToString(", ")}",
                 details = "Review whether the app legitimately needs access to this data"

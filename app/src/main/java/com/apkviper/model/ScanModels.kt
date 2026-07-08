@@ -11,6 +11,17 @@ enum class Severity {
     INFO, LOW, MEDIUM, HIGH, CRITICAL
 }
 
+/**
+ * Confidence attached to a finding. Drives how much weight the scorer gives it.
+ *  - HIGH:    curated, high-fidelity signal (our own ruleset, known-malware hash, confirmed C2).
+ *  - MEDIUM:  corroborating signal (framework-aware native correlation, ML moderate).
+ *  - LOW:     community / auto-updated rule that matched on a single loose string; never by
+ *             itself sufficient to produce a MALICIOUS verdict (defense against false positives).
+ */
+enum class FindingConfidence {
+    HIGH, MEDIUM, LOW
+}
+
 enum class FindingCategory {
     MANIFEST, PERMISSION, CODE, STRING, CERTIFICATE, PACKER,
     OBFUSCATION, NATIVE, NETWORK, CLOUD, MALWARE, CRYPTO_MINER,
@@ -48,7 +59,9 @@ data class Finding(
     val description: String,
     val details: String? = null,
     val file: String? = null,
-    val line: Int? = null
+    val line: Int? = null,
+    val confidence: FindingConfidence = FindingConfidence.HIGH,
+    val ruleSource: String? = null
 )
 
 data class DecompileResult(

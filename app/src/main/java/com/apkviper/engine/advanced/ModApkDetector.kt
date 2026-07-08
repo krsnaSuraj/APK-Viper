@@ -203,8 +203,8 @@ class ModApkDetector {
         return ModRiskAssessment(
             riskScore = riskScore,
             repackaged = repackaged,
-            newPermissions = emptyList(),
-            newComponents = emptyList(),
+            newPermissions = dangerousAdded,
+            newComponents = exportedNew,
             newDangerousApis = newApis,
             newNativeLibs = newLibs,
             suggestion = suggestion
@@ -321,17 +321,20 @@ class ModApkDetector {
             " | GENUINE_MOD: Likely genuine mod with expected modifications"
         } else ""
 
+        // Mod detection is an INTEGRITY note, not malware evidence. Genuine and modded apps
+        // must never be flagged MALICIOUS. Severe findings are capped at MEDIUM and emitted under
+        // the BEHAVIORAL/PACKER (informational) categories — never MALWARE/CRITICAL.
         if (effectiveRisk >= 100) {
-            val severity = if (isGenuine && effectiveRisk < 150) Severity.HIGH else Severity.CRITICAL
+            val severity = if (isGenuine) Severity.MEDIUM else Severity.HIGH
             findings.add(Finding(
-                category = FindingCategory.MALWARE,
+                category = FindingCategory.BEHAVIORAL,
                 severity = severity,
-                title = "Malicious Mod — ${assessment.riskScore} Risk Score",
+                title = "High-Risk Mod Detected — ${assessment.riskScore} Risk Score",
                 description = assessment.suggestion + genuineModNote,
                 details = "New dangerous APIs: ${assessment.newDangerousApis.joinToString(", ")}, New components: ${assessment.newComponents.joinToString(", ")}" + crossValNote
             ))
         } else if (effectiveRisk >= 51) {
-            val severity = if (isGenuine) Severity.MEDIUM else Severity.HIGH
+            val severity = if (isGenuine) Severity.LOW else Severity.MEDIUM
             findings.add(Finding(
                 category = FindingCategory.BEHAVIORAL,
                 severity = severity,
@@ -341,7 +344,7 @@ class ModApkDetector {
         } else if (effectiveRisk >= 21) {
             findings.add(Finding(
                 category = FindingCategory.BEHAVIORAL,
-                severity = Severity.LOW,
+                severity = Severity.INFO,
                 title = "Ad-Removal Mod Detected",
                 description = assessment.suggestion + genuineModNote + crossValNote
             ))
@@ -427,29 +430,6 @@ class ModApkDetector {
         return comps
     }
 
-    fun getSoxFingerprint(apkFile: File): String? {
-        return try {
-            ZipFile(apkFile).use { zip ->
-                val dexEntries = zip.entries().asSequence()
-                    .filter { !it.isDirectory && it.name.endsWith(".dex") }
-                    .sortedBy { it.name }
-                    .toList()
-                if (dexEntries.isEmpty()) return null
-
-                val digest = MessageDigest.getInstance("SHA-256")
-                for (entry in dexEntries) {
-                    val strings = extractStringOffsets(zip, entry.name)
-                    for (offset in strings) {
-                        digest.update(java.nio.ByteBuffer.allocate(8).putLong(offset).array())
-                    }
-                }
-                digest.digest().joinToString("") { "%02x".format(it) }
-            }
-        } catch (e: Exception) {
-            null
-        }
-    }
-
     /**
      * String Offset Order (SOO) anomaly detection.
      * Repackaged APKs (via apktool etc.) often have disrupted alphabetical ordering
@@ -529,41 +509,6 @@ class ModApkDetector {
                 details = "SOO anomaly ratio: ${"%.3f".format(sooAnomaly)}"
             )
             else -> null
-        }
-    }
-
-    private fun extractStringOffsets(zip: ZipFile, dexPath: String): List<Long> {
-        try {
-            val entry = zip.getEntry(dexPath) ?: return emptyList()
-            val data = zip.getInputStream(entry).readBytes()
-            if (data.size < 40) return emptyList()
-
-            val stringIdsOffset = ((data[8].toInt() and 0xFF).toLong() shl 32) or
-                ((data[9].toInt() and 0xFF).toLong() shl 24) or
-                ((data[10].toInt() and 0xFF).toLong() shl 16) or
-                ((data[11].toInt() and 0xFF).toLong() shl 8) or
-                (data[12].toInt() and 0xFF).toLong()
-
-            val stringIdsSize = ((data[13].toInt() and 0xFF).toLong() shl 32) or
-                ((data[14].toInt() and 0xFF).toLong() shl 24) or
-                ((data[15].toInt() and 0xFF).toLong() shl 16) or
-                ((data[16].toInt() and 0xFF).toLong() shl 8) or
-                (data[17].toInt() and 0xFF).toLong()
-
-            val offsets = mutableListOf<Long>()
-            val count = (stringIdsSize / 4).toInt().coerceAtMost(10000)
-            for (i in 0 until count) {
-                val pos = (stringIdsOffset + i * 4).toInt()
-                if (pos + 4 > data.size) break
-                val off = ((data[pos].toInt() and 0xFF).toLong() shl 24) or
-                    ((data[pos + 1].toInt() and 0xFF).toLong() shl 16) or
-                    ((data[pos + 2].toInt() and 0xFF).toLong() shl 8) or
-                    (data[pos + 3].toInt() and 0xFF).toLong()
-                offsets.add(off)
-            }
-            return offsets
-        } catch (e: Exception) {
-            return emptyList()
         }
     }
 }

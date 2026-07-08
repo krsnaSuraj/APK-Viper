@@ -166,4 +166,22 @@ class PackerDetectorTest {
         )
         assertTrue(detector.detect(result).none { it.title == "ELF Packing Indicators" })
     }
+
+    @Test
+    fun packerFindings_usePackerCategory_notMalware() {
+        // Gate contract: packer findings are PACKER (surface), never MALWARE. PACKER is NOT in
+        // the strong-evidence set, so a packed-but-benign app can never be MALICIOUS on this alone.
+        val code = "com.tencent.StubShell\nDexClassLoader loader"
+        val result = DecompileResult(
+            javaSource = mapOf("App.java" to code),
+            smaliSource = emptyMap(), manifest = "", resources = emptyMap(),
+            dexFiles = emptyList(), nativeLibs = emptyList(), decompileTimeMs = 0
+        )
+        val findings = detector.detect(result)
+        assertTrue("Should detect packer", findings.isNotEmpty())
+        assertTrue(
+            "All packer findings must be PACKER (got ${findings.map { it.category }})",
+            findings.all { it.category == FindingCategory.PACKER }
+        )
+    }
 }

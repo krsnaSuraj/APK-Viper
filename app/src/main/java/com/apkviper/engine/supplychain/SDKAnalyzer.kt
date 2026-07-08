@@ -84,7 +84,7 @@ class SDKAnalyzer {
                 // Flag known CVEs
                 sdk.knownVulnerabilities.forEach { cve ->
                     findings.add(Finding(
-                        category = FindingCategory.MALWARE,
+                        category = FindingCategory.CODE,
                         severity = Severity.HIGH,
                         title = "Vulnerable SDK: ${sdk.name}",
                         description = "$cve in ${sdk.name} (${sdk.description})"

@@ -2,6 +2,7 @@ package com.apkviper.engine.classification
 
 import com.apkviper.model.Finding
 import com.apkviper.model.FindingCategory
+import com.apkviper.model.FindingConfidence
 import com.apkviper.model.Severity
 
 data class ClassificationResult(
@@ -12,6 +13,26 @@ data class ClassificationResult(
 class ThreatClassifier {
 
     fun classify(findings: List<Finding>): ClassificationResult {
+        // Strong malware evidence means a genuinely malicious category fired. Without it, the app
+        // — even if it has many benign/mod/native findings — is NOT malicious. This is the gate
+        // that stops genuine/modded apps from being labelled as malware.
+        val hasStrongEvidence = findings.any { f ->
+            val highConf = f.confidence != FindingConfidence.LOW && f.ruleSource != "community"
+            (f.category == FindingCategory.MALWARE && highConf) ||
+            (f.category == FindingCategory.CRYPTO_MINER &&
+                (f.severity == Severity.HIGH || f.severity == Severity.CRITICAL)) ||
+            (f.category == FindingCategory.BEHAVIORAL &&
+                f.severity == Severity.CRITICAL && f.confidence == FindingConfidence.HIGH)
+        }
+        if (!hasStrongEvidence) {
+            val classification = if (findings.isEmpty()) {
+                "Clean Application"
+            } else {
+                "No Malicious Behavior Detected"
+            }
+            return ClassificationResult(classification, emptyList())
+        }
+
         val classification = classifyThreatType(findings)
         val remediations = generateRemediations(findings, classification)
         return ClassificationResult(classification, remediations)
@@ -120,7 +141,9 @@ class ThreatClassifier {
         return when {
             score >= 30 -> "Malicious Payload — multiple high-severity indicators detected across ${categories.size} analysis categories"
             score >= 15 -> "Suspicious Application — anomalous behavior warrants further investigation"
-            else -> null
+            // Strong malware evidence is present but severity-score is low (e.g. only two
+            // high-fidelity MEDIUM findings). Never return a blank label for confirmed malware.
+            else -> "Malicious Application — confirmed malware indicators detected"
         }
     }
 
@@ -187,11 +210,14 @@ class ThreatClassifier {
             }
         }
 
-        // Always include basic step
-        val appName = findings.firstOrNull()?.let { f ->
-            f.title.substringBefore(" — ").take(30)
-        } ?: "this app"
-        remediations.add("Uninstall immediately via Settings > Apps > \"$appName\" > Uninstall.")
+        // Only recommend uninstall when there is confirmed malicious behavior (we are only
+        // reached when strong malware evidence is present). No blanket "uninstall" for benign apps.
+        if (criticalCount >= 1 || highCount >= 1) {
+            val appName = findings.firstOrNull()?.let { f ->
+                f.title.substringBefore(" — ").take(30)
+            } ?: "this app"
+            remediations.add("Uninstall via Settings > Apps > \"$appName\" > Uninstall after following the steps above.")
+        }
 
         return remediations.distinct().take(5)
     }

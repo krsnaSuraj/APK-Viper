@@ -2,6 +2,7 @@ package com.apkviper.engine.heuristic
 
 import com.apkviper.model.DecompileResult
 import com.apkviper.model.FindingCategory
+import com.apkviper.model.FindingConfidence
 import com.apkviper.model.Severity
 import org.junit.Assert.*
 import org.junit.Test
@@ -252,5 +253,32 @@ class BehavioralDetectorTest {
         val smsFinding = findings.first { it.title == "SMS Exfiltration" }
         assertTrue(smsFinding.details?.contains("Confidence:") == true)
         assertTrue(smsFinding.details?.contains("100%") == true)
+    }
+
+    @Test
+    fun allMalwareFindings_emitLowConfidence() {
+        // Gate contract: heuristic BehavioralDetector MALWARE findings must be LOW confidence
+        // so they are surface-only and can never by themselves drive a MALICIOUS verdict.
+        val code = """
+            sendTextMessage
+            getMessageBody
+            SmsManager s
+            isDebuggerConnected
+            frida hook
+            DexClassLoader loader
+            PathClassLoader path
+        """.trimIndent()
+        val result = DecompileResult(
+            javaSource = mapOf("Mix.java" to code),
+            smaliSource = emptyMap(), manifest = "", resources = emptyMap(),
+            dexFiles = emptyList(), nativeLibs = emptyList(), decompileTimeMs = 0
+        )
+        val findings = detector.analyze(result)
+        assertTrue("Should produce some MALWARE findings", findings.isNotEmpty())
+        assertTrue(
+            "Every MALWARE finding must be LOW confidence (got ${findings.map { it.confidence }})",
+            findings.all { it.confidence == FindingConfidence.LOW }
+        )
+        assertEquals(FindingCategory.MALWARE, findings.first().category)
     }
 }

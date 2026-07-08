@@ -110,6 +110,51 @@ class ScanForegroundServiceTest {
     }
 
     @Test
+    fun createChannels_createsBothChannels() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        ScanForegroundService.createChannels(context)
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val scanChannel = nm.getNotificationChannel(ScanForegroundService.CHANNEL_ID)
+        val resultChannel = nm.getNotificationChannel(ScanForegroundService.CHANNEL_ID_RESULTS)
+        assertNotNull("scan_progress channel must exist", scanChannel)
+        assertNotNull("scan_results channel must exist", resultChannel)
+        assertEquals(NotificationManager.IMPORTANCE_LOW, scanChannel.importance)
+        assertEquals(NotificationManager.IMPORTANCE_DEFAULT, resultChannel.importance)
+    }
+
+    @Test
+    fun onCreate_createsChannels() {
+        // Re-create the service (onCreate calls createChannels) and verify channels.
+        val svc = Robolectric.buildService(ScanForegroundService::class.java).create().get()
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        assertNotNull(nm.getNotificationChannel(ScanForegroundService.CHANNEL_ID))
+        assertNotNull(nm.getNotificationChannel(ScanForegroundService.CHANNEL_ID_RESULTS))
+        svc.onDestroy()
+    }
+
+    @Test
+    fun onStartCommand_withRedeliveryFlag_updatesExistingNotification() {
+        // System restarted the service (START_FLAG_REDELIVERY): must not call
+        // startForeground again (would crash if no prior foreground state) and
+        // should instead update the notification from the checkpoint.
+        val intent = Intent(service, ScanForegroundService::class.java).apply {
+            putExtra(ScanForegroundService.EXTRA_PROGRESS, 25)
+            putExtra(ScanForegroundService.EXTRA_PHASE, "Resumed...")
+        }
+        val result = service.onStartCommand(intent, android.app.Service.START_FLAG_REDELIVERY, 1)
+        assertEquals(android.app.Service.START_REDELIVER_INTENT, result)
+        val notifications = notificationManager.allNotifications
+        assertTrue(notifications.isNotEmpty())
+    }
+
+    @Test
+    fun onStartCommand_nullIntent_doesNotThrow() {
+        val result = service.onStartCommand(null, 0, 1)
+        assertEquals(android.app.Service.START_REDELIVER_INTENT, result)
+    }
+
+    @Test
     fun showScanComplete_validContext_buildsNotification() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         try {

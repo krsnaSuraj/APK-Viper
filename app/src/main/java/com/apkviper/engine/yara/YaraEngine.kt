@@ -3,6 +3,7 @@ package com.apkviper.engine.yara
 import com.apkviper.model.DecompileResult
 import com.apkviper.model.Finding
 import com.apkviper.model.FindingCategory
+import com.apkviper.model.FindingConfidence
 import com.apkviper.model.Severity
 import java.util.concurrent.ConcurrentHashMap
 
@@ -12,6 +13,18 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * Parses YARA-compatible rule format and matches against
  * APK smali, Java source, and manifest content.
+ *
+ * IMPORTANT (false-positive fix): a rule only fires when its `condition:` is
+ * actually satisfied. Previously the engine fired on ANY single string match,
+ * which caused rules such as `Android_Ransomware_FileCoder` (condition requires
+ * an encryption verb AND a `.locked`/`.enc` extension) to trigger on ordinary
+ * apps that merely contain the word "encrypt". The condition evaluator below
+ * implements `any of` / `all of` / `N of` quantifiers plus `and` / `or` / `not`
+ * and parentheses, so a rule fires only when its full logic holds.
+ *
+ * Community / auto-updated rules carry `confidence = "low"` in their meta block;
+ * those matches are surfaced but (see ThreatScorer) can never alone produce a
+ * MALICIOUS verdict.
  */
 class YaraEngine {
 
@@ -96,7 +109,15 @@ class YaraEngine {
                 if (found) matchedIds.add(rs.identifier)
             }
 
-            if (matchedIds.isNotEmpty()) {
+            // CONDITION EVALUATION -- the rule fires only if its full condition holds.
+            val conditionMet = try {
+                ConditionEvaluator.evaluate(rule.condition, matchedIds.toSet())
+            } catch (e: Exception) {
+                android.util.Log.w("YaraEngine", "Failed to evaluate condition for ${rule.name}: ${e.message}")
+                false
+            }
+
+            if (conditionMet && matchedIds.isNotEmpty()) {
                 val severity = when {
                     rule.name.contains("RAT", ignoreCase = true) -> Severity.CRITICAL
                     rule.name.contains("banker", ignoreCase = true) || rule.name.contains("trojan", ignoreCase = true) -> Severity.CRITICAL
@@ -110,6 +131,12 @@ class YaraEngine {
                     else -> Severity.MEDIUM
                 }
 
+                val confidence = when (rule.meta["confidence"]?.lowercase()) {
+                    "low" -> FindingConfidence.LOW
+                    "medium" -> FindingConfidence.MEDIUM
+                    else -> FindingConfidence.HIGH
+                }
+
                 findings.add(Finding(
                     category = FindingCategory.MALWARE,
                     severity = severity,
@@ -118,7 +145,9 @@ class YaraEngine {
                     details = "Matched strings: ${matchedIds.joinToString(", ")}\n" +
                               "Rule: ${rule.name}\n" +
                               "Family: ${rule.meta["family"] ?: "unknown"}\n" +
-                              "Author: ${rule.meta["author"] ?: "community"}"
+                              "Author: ${rule.meta["author"] ?: "community"}",
+                    confidence = confidence,
+                    ruleSource = if (confidence == FindingConfidence.LOW) "community" else "curated"
                 ))
             }
         }
@@ -198,6 +227,139 @@ class YaraEngine {
         }
 
         return parsedRules
+    }
+
+    /**
+     * Recursive-descent evaluator for the subset of YARA condition syntax used by our
+     * ruleset: string identifiers (`$id`, `$id*` wildcard), `any of` / `all of` / `N of`
+     * quantifiers over identifier lists, plus `not`, parentheses, `and`, `or`.
+     *
+     * `matched` is the set of string identifiers that actually matched in the sample.
+     */
+    object ConditionEvaluator {
+
+        fun evaluate(condition: String, matched: Set<String>): Boolean {
+            if (condition.isBlank()) return false
+            val tokens = tokenize(condition)
+            if (tokens.isEmpty()) return false
+            val parser = Parser(tokens, matched)
+            return try {
+                parser.parseOr()
+            } catch (e: Exception) {
+                false
+            }
+        }
+
+        private fun tokenize(cond: String): List<String> {
+            val tokens = mutableListOf<String>()
+            var i = 0
+            while (i < cond.length) {
+                val c = cond[i]
+                when {
+                    c.isWhitespace() -> i++
+                    c == '(' || c == ')' || c == ',' -> { tokens.add(c.toString()); i++ }
+                    c == '$' -> {
+                        var j = i + 1
+                        while (j < cond.length && (cond[j].isLetterOrDigit() || cond[j] == '_' || cond[j] == '*')) j++
+                        tokens.add(cond.substring(i, j)); i = j
+                    }
+                    c.isLetterOrDigit() || c == '_' -> {
+                        var j = i
+                        while (j < cond.length && (cond[j].isLetterOrDigit() || cond[j] == '_' || cond[j] == '.')) j++
+                        tokens.add(cond.substring(i, j)); i = j
+                    }
+                    else -> i++ // skip unknown chars
+                }
+            }
+            return tokens
+        }
+
+        private class Parser(private val tokens: List<String>, private val matched: Set<String>) {
+            private var pos = 0
+
+            fun parseOr(): Boolean {
+                var value = parseAnd()
+                while (peek() == "or") {
+                    next()
+                    value = value || parseAnd()
+                }
+                return value
+            }
+
+            private fun parseAnd(): Boolean {
+                var value = parseFactor()
+                while (peek() == "and") {
+                    next()
+                    value = value && parseFactor()
+                }
+                return value
+            }
+
+            private fun parseFactor(): Boolean {
+                return when (peek()) {
+                    "not" -> { next(); !parseFactor() }
+                    "(" -> {
+                        next()
+                        val v = parseOr()
+                        if (peek() == ")") next()
+                        v
+                    }
+                    "any", "all" -> parseQuantifier(peek()!!)
+                    else -> {
+                        val tok = peek()
+                        if (tok != null && tok.matches(Regex("^\\d+$"))) parseQuantifier(tok)
+                        else parseAtom()
+                    }
+                }
+            }
+
+            private fun parseQuantifier(kind: String): Boolean {
+                when (kind) {
+                    "any" -> { next(); expect("of") }
+                    "all" -> { next(); expect("of") }
+                    else -> { next(); expect("of") }
+                }
+                expect("(")
+                val list = mutableListOf<String>()
+                while (peek() != ")") {
+                    val t = peek()
+                    if (t == null) break
+                    if (t != ",") list.add(t)
+                    next()
+                }
+                expect(")")
+                val results = list.map { resolveIdentifier(it) }
+                return when (kind) {
+                    "any" -> results.any { it }
+                    "all" -> results.all { it } && results.isNotEmpty()
+                    else -> {
+                        val n = kind.toIntOrNull() ?: 1
+                        results.count { it } >= n
+                    }
+                }
+            }
+
+            private fun parseAtom(): Boolean {
+                val tok = peek()
+                return if (tok != null) { next(); resolveIdentifier(tok) } else false
+            }
+
+            private fun resolveIdentifier(id: String): Boolean {
+                if (id.startsWith("$")) {
+                    return if (id.endsWith("*")) {
+                        val prefix = id.removeSuffix("*")
+                        matched.any { it.startsWith(prefix) }
+                    } else {
+                        matched.contains(id)
+                    }
+                }
+                return false
+            }
+
+            private fun peek(): String? = tokens.getOrNull(pos)
+            private fun next() { pos++ }
+            private fun expect(t: String) { if (peek() == t) pos++ }
+        }
     }
 
     /**

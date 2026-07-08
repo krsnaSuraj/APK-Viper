@@ -67,7 +67,8 @@ class PrivacyScorerTest {
         val result = makeResult(manifest = manifest)
         val pr = scorer.assess(result)
         assertTrue(pr.dataCategories.size >= 5)
-        assertTrue(pr.findings.any { it.severity == Severity.HIGH || it.severity == Severity.CRITICAL })
+        // Trackers / data-access are expected in genuine apps — capped at LOW, never flagged malicious.
+        assertTrue(pr.findings.all { it.severity == Severity.LOW })
     }
 
     @Test

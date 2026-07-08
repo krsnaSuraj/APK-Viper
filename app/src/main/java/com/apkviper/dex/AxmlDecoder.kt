@@ -21,7 +21,8 @@ class AxmlDecoder {
         var lineStart = true
         val selfCloseStack = ArrayDeque<Pair<String, Int>>() // (name, position before '>')
 
-        while (buf.hasRemaining()) {
+        try {
+            while (buf.hasRemaining()) {
             val chunkType = buf.short.toInt() and 0xFFFF
             buf.short // chunk header size (skip)
             val chunkSize = buf.int
@@ -146,6 +147,9 @@ class AxmlDecoder {
                     }
                 }
             }
+            }
+        } catch (_: Exception) {
+            // Malformed/truncated AXML — stop parsing and return partial output
         }
 
         return sb.toString()

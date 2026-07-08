@@ -52,7 +52,7 @@ class ApkFileMonitorService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)
             .build()
-        try { startForeground(NOTIFICATION_ID, notification) } catch (e: SecurityException) {
+        try { startForeground(NOTIFICATION_ID, notification) } catch (e: Throwable) {
             android.util.Log.w("ApkMonitor", "startForeground failed: ${e.message}")
         }
         return START_STICKY

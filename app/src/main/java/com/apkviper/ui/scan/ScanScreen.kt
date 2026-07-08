@@ -36,7 +36,7 @@ fun ScanScreen(viewModel: ScanViewModel, apkPath: String, apkName: String, onBac
         }
     }
 
-    val cancelled = uiState.errorMessage == "Cancelled" || uiState.errorMessage == "Stopped"
+    val cancelled = uiState.errorMessage == "Cancelled"
     val scanResult = uiState.result
 
     if (uiState.scanComplete && scanResult != null && !cancelled) {

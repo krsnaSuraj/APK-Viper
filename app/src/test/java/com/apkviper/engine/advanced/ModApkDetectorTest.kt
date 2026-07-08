@@ -28,6 +28,21 @@ class ModApkDetectorTest {
         DecompileResult(java, mapOf(), manifest, mapOf(), emptyList(), libs, 0)
 
     @Test
+    fun assess_populatesNewPermissionsAndComponents() {
+        val apk = createMinimalApk()
+        val manifest = """
+            <manifest package="com.test">
+                <uses-permission android:name="android.permission.SEND_SMS"/>
+                <service android:name=".Evil" exported="true" />
+            </manifest>
+        """.trimIndent()
+        val result = detector.assess(context, apk, decompile(manifest = manifest), null)
+        assertTrue("dangerousAdded must propagate to newPermissions", result.newPermissions.contains("SEND_SMS"))
+        assertTrue("exported components must propagate to newComponents",
+            result.newComponents.any { it.contains("exported", ignoreCase = true) && it.contains("true", ignoreCase = true) })
+    }
+
+    @Test
     fun assessCleanApk_lowRisk() {
         val apk = createMinimalApk()
         val manifest = """<manifest package="com.test" />"""
@@ -72,7 +87,7 @@ class ModApkDetectorTest {
     }
 
     @Test
-    fun generateFindings_highRisk_criticalMalware() {
+    fun generateFindings_highRisk_neverMaliciousOrCritical() {
         val assessment = ModApkDetector.ModRiskAssessment(
             riskScore = 150, repackaged = true,
             newPermissions = listOf("SEND_SMS"),
@@ -80,12 +95,14 @@ class ModApkDetectorTest {
             newNativeLibs = emptyList(), suggestion = "malicious"
         )
         val findings = detector.generateFindings(assessment)
-        assertTrue(findings.any { it.severity == Severity.CRITICAL })
-        assertTrue(findings.any { it.title.contains("Malicious Mod") })
+        // Mods are an integrity note, never MALWARE/CRITICAL — genuine/modded apps must not be flagged.
+        assertFalse(findings.any { it.severity == Severity.CRITICAL })
+        assertFalse(findings.any { it.category == FindingCategory.MALWARE })
+        assertTrue(findings.any { it.title.contains("High-Risk Mod") })
     }
 
     @Test
-    fun generateFindings_suspicious_highSeverity() {
+    fun generateFindings_suspicious_mediumSeverity() {
         val assessment = ModApkDetector.ModRiskAssessment(
             riskScore = 75, repackaged = true,
             newPermissions = listOf("BIND_ACCESSIBILITY_SERVICE", "SEND_SMS"),
@@ -94,7 +111,7 @@ class ModApkDetectorTest {
         )
         val findings = detector.generateFindings(assessment)
         assertTrue(findings.any { it.title.contains("Suspicious Mod") })
-        assertEquals(Severity.HIGH, findings.first { it.title.contains("Suspicious Mod") }.severity)
+        assertEquals(Severity.MEDIUM, findings.first { it.title.contains("Suspicious Mod") }.severity)
     }
 
     @Test
@@ -119,12 +136,6 @@ class ModApkDetectorTest {
         )
         val findings = detector.generateFindings(assessment)
         assertTrue(findings.any { it.title.contains("Repackaged APK") })
-    }
-
-    @Test
-    fun getSoxFingerprint_nonExistent_returnsNull() {
-        val result = detector.getSoxFingerprint(File("nonexistent.apk"))
-        assertNull(result)
     }
 
     @Test

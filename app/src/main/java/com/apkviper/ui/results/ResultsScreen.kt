@@ -1,6 +1,5 @@
 package com.apkviper.ui.results
 
-import android.app.Application
 import android.widget.Toast
 import java.util.*
 import androidx.compose.animation.animateColorAsState

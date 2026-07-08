@@ -12,8 +12,8 @@ android {
         applicationId = "com.apkviper"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -56,6 +56,14 @@ android {
             .forEach { output ->
                 output.outputFileName = "APK Viper v${variant.versionName}.apk"
             }
+    }
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+        }
+        unitTests.all { test ->
+            test.jvmArgs("-Xmx2g", "-XX:MaxMetaspaceSize=512m")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
